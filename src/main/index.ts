@@ -4,6 +4,7 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { initDB } from './db';
 import { getRequiredDependencies } from './modrinth';
+import fs from 'fs/promises';
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -55,6 +56,42 @@ app.whenReady().then(async () => {
     } catch (error: any) {
       console.error(error);
       return { error: error.message }; 
+    }
+  });
+  
+  ipcMain.handle('download-mods', async (_, mods) => {
+    try {
+      // 1. 모드를 저장할 폴더 경로 설정 (AppData/Roaming/앱이름/mods 폴더에 저장)
+      const modsDir = join(app.getPath('userData'), 'mods');
+      await fs.mkdir(modsDir, { recursive: true }); // 폴더가 없으면 만듦
+
+      const downloadResults: string[] = [];
+
+      // 2. 전달받은 모드 목록을 하나씩 다운로드
+      for (const mod of mods) {
+        const file = mod.files[0];
+        const fileUrl = file.url;
+        const fileName = file.filename;
+        const filePath = join(modsDir, fileName);
+
+        console.log(`[다운로드 시작] ${fileName}...`);
+        
+        // 파일 다운로드 및 저장
+        const response = await fetch(fileUrl);
+        if (!response.ok) throw new Error(`${fileName} 다운로드 실패`);
+        
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        await fs.writeFile(filePath, buffer);
+        
+        console.log(`[다운로드 완료] ${filePath}`);
+        downloadResults.push(fileName);
+      }
+
+      return { success: true, path: modsDir, files: downloadResults };
+    } catch (error: any) {
+      console.error("다운로드 에러:", error);
+      return { success: false, error: error.message };
     }
   });
   

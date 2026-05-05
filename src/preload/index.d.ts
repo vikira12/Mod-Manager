@@ -64,13 +64,57 @@ export interface InstallProgress {
   reason?: string
 }
 
+export type DepType = 'required' | 'optional' | 'incompatible' | 'embedded'
+
+export interface DepNode {
+  modrinth_id:     string
+  name:            string
+  description:     string
+  icon_url:        string | null
+  downloads:       number
+  version_number:  string
+  modrinth_ver_id: string
+  file_url:        string | null
+  file_name:       string | null
+  dep_type:        DepType
+  depth:           number
+  children:        DepNode[]
+}
+
+export interface ResolveResult {
+  ok:           boolean
+  root:         DepNode | null
+  installOrder: DepNode[]
+  required:     DepNode[]
+  optional:     DepNode[]
+  conflicts:    { mod: DepNode; conflictWith: string }[]
+  error?:       string
+}
+
+export interface ValidationResult {
+  ok:        boolean
+  conflicts: { a: string; b: string }[]
+  error?:    string
+}
+
 export interface ElectronAPI {
   searchMod:          (query: string, opts?: { loader?: string; gameVersion?: string }) => Promise<SearchResult>
   getDependencies:    (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<DependencyResult>
+
+  // 의존성 해결 엔진
+  resolveDeps:        (modrinthId: string, opts?: { gameVersion?: string; loader?: string; selected?: string[] }) => Promise<ResolveResult>
+  validateSelection:  (modrinthIds: string[], opts?: { gameVersion?: string; loader?: string }) => Promise<ValidationResult>
+
   downloadMods:       (mods: ModRow[], installPath?: string) => Promise<InstallResult>
+  
+  // 폴더 연결 (Junction/Symlink)
+  createJunction:     (sourceDir: string, targetDir: string) => Promise<{ ok: boolean; error?: string }>
+  removeJunction:     (targetDir: string) => Promise<{ ok: boolean; error?: string }>
+
   syncModrinth:       (opts?: { limit?: number }) => Promise<SyncResult>
   syncStatus:         () => Promise<SyncStatus>
   openFolder:         (path: string) => Promise<void>
+  
   onSyncProgress:     (cb: (data: SyncProgress) => void)    => () => void
   onInstallProgress:  (cb: (data: InstallProgress) => void) => () => void
 }

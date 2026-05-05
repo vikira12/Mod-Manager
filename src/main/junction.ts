@@ -1,25 +1,34 @@
-import { ipcMain, shell, BrowserWindow, app } from 'electron'
+import { ipcMain, shell, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import axios from 'axios'
 import {
   searchLocal, searchRemote, getDependencies,
-  syncModrinth, getSyncStatus, fetchAndCache
+  syncModrinth, getSyncStatus,
 } from './modrinth'
-
-// 운영체제별 마인크래프트 기본 경로 찾기
-function getDefaultMinecraftPath(): string {
-  const home = app.getPath('home')
-  if (process.platform === 'win32') {
-    return path.join(app.getPath('appData'), '.minecraft', 'mods')
-  } else if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'minecraft', 'mods')
-  } else {
-    return path.join(home, '.minecraft', 'mods')
-  }
-}
+import { resolveDependencies, validateSelection } from './resolver'
 
 export function registerHandlers(win: BrowserWindow): void {
+
+  // 의존성 해결 (DFS)
+  ipcMain.handle('resolve-deps', async (_e, modrinthId: string, opts = {}) => {
+    try {
+      const result = await resolveDependencies(modrinthId, opts)
+      return result
+    } catch (err: any) {
+      return { ok: false, error: err.message, root: null, installOrder: [], required: [], optional: [], conflicts: [] }
+    }
+  })
+
+  // 선택 검증
+  ipcMain.handle('validate-selection', async (_e, modrinthIds: string[], opts = {}) => {
+    try {
+      return await validateSelection(modrinthIds, opts)
+    } catch (err: any) {
+      return { ok: false, conflicts: [], error: err.message }
+    }
+  })
+
   // 모드 검색
   ipcMain.handle('search-mod', async (_e, query: string, opts = {}) => {
     try {
@@ -46,36 +55,27 @@ export function registerHandlers(win: BrowserWindow): void {
 
   // 모드 설치
   ipcMain.handle('download-mods', async (_e, mods: any[], installPath?: string) => {
-    const targetDir = installPath ?? getDefaultMinecraftPath()
+    const targetDir = installPath ?? path.join(
+      process.env.APPDATA ?? process.env.HOME ?? '',
+      '.minecraft', 'mods'
+    )
     fs.mkdirSync(targetDir, { recursive: true })
 
     const success: string[] = []
     const failed: { name: string; reason: string }[] = []
 
-    for (let mod of mods) {
+    for (const mod of mods) {
+      if (!mod.file_url) {
+        failed.push({ name: mod.name ?? mod.modrinth_id, reason: 'file_url 없음' })
+        continue
+      }
       try {
-        if (!mod.file_url && mod.modrinth_id) {
-          console.log(`[IPC] ${mod.name} 파일 정보 없음. API에서 버전 정보를 긁어옵니다...`)
-          await fetchAndCache(mod.modrinth_id) // DB에 버전 정보 저장
-          
-          // 캐시된 정보로 DB에서 다시 불러오기
-          const refreshed = await searchLocal(mod.name)
-          const matched = refreshed.find(r => r.modrinth_id === mod.modrinth_id)
-          
-          if (matched && matched.file_url) {
-            mod = matched
-          } else {
-            throw new Error('해당 모드의 배포된 릴리즈 파일(jar)을 찾을 수 없습니다.')
-          }
-        }
-
         const fileName = mod.file_name ?? `${mod.slug ?? mod.modrinth_id}.jar`
         const dest = path.join(targetDir, fileName)
 
         if (!fs.existsSync(dest)) {
           const writer = fs.createWriteStream(dest)
           const resp = await axios({ url: mod.file_url, method: 'GET', responseType: 'stream' })
-          
           await new Promise<void>((res, rej) => {
             resp.data.pipe(writer)
             writer.on('finish', res)
@@ -86,12 +86,64 @@ export function registerHandlers(win: BrowserWindow): void {
         win.webContents.send('install-progress', { name: mod.name, fileName, status: 'done' })
         success.push(fileName)
       } catch (err: any) {
-        failed.push({ name: mod.name ?? mod.modrinth_id, reason: err.message })
+        failed.push({ name: mod.name, reason: err.message })
         win.webContents.send('install-progress', { name: mod.name, status: 'error', reason: err.message })
       }
     }
 
     return { success: failed.length === 0, files: success, failed }
+  })
+
+  // 폴더 연결
+  ipcMain.handle('create-junction', async (_e, sourceDir: string, targetDir: string) => {
+    try {
+      // 1. 소스 폴더(중앙 모드 보관소)가 없으면 생성
+      if (!fs.existsSync(sourceDir)) {
+        fs.mkdirSync(sourceDir, { recursive: true })
+      }
+
+      // 2. 타겟 폴더
+      if (fs.existsSync(targetDir)) {
+        const stat = fs.lstatSync(targetDir)
+        if (stat.isSymbolicLink()) {
+          // 이미 링크가 걸려있다면 안전하게 해제
+          fs.unlinkSync(targetDir)
+        } else {
+          // 실제 폴더가 존재한다면 백업 처리
+          const backupPath = `${targetDir}_backup_${Date.now()}`
+          fs.renameSync(targetDir, backupPath)
+          console.log(`[IPC] 기존 폴더 백업 완료: ${backupPath}`)
+        }
+      } else {
+        // 부모 폴더가 없는 경우 대비
+        fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+      }
+
+      // 3. Junction 생성
+      fs.symlinkSync(sourceDir, targetDir, 'junction')
+      console.log(`[IPC] Junction 생성 완료: ${targetDir} -> ${sourceDir}`)
+      
+      return { ok: true }
+    } catch (err: any) {
+      console.error(`[IPC] Junction 생성 실패:`, err)
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('remove-junction', async (_e, targetDir: string) => {
+    try {
+      if (fs.existsSync(targetDir)) {
+        const stat = fs.lstatSync(targetDir)
+        if (stat.isSymbolicLink()) {
+          fs.unlinkSync(targetDir)
+          console.log(`[IPC] Junction 해제 완료: ${targetDir}`)
+        }
+      }
+      return { ok: true }
+    } catch (err: any) {
+      console.error(`[IPC] Junction 해제 실패:`, err)
+      return { ok: false, error: err.message }
+    }
   })
 
   // DB 동기화
@@ -104,5 +156,6 @@ export function registerHandlers(win: BrowserWindow): void {
 
   ipcMain.handle('sync-status', async () => getSyncStatus())
 
+  // 유틸
   ipcMain.handle('open-folder', async (_e, folderPath: string) => shell.openPath(folderPath))
 }

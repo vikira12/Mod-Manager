@@ -50,6 +50,21 @@ const api: ElectronAPI = {
     ipcRenderer.on('install-progress', handler)
     return () => ipcRenderer.removeListener('install-progress', handler)
   },
+  
+  getProfiles: () => 
+    ipcRenderer.invoke('get-profiles'),
+    
+  createProfile: (data) => 
+    ipcRenderer.invoke('create-profile', data),
+    
+  deleteProfile: (id) => 
+    ipcRenderer.invoke('delete-profile', id),
+    
+  getInstalledMods: (profileId) => 
+    ipcRenderer.invoke('get-installed-mods', profileId),
+    
+  uninstallMod: (profileId, modId) => 
+    ipcRenderer.invoke('uninstall-mod', profileId, modId),
 }
 
 contextBridge.exposeInMainWorld('electron', api)

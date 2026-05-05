@@ -1,5 +1,5 @@
 import { db } from './db'
-import { fetchAndCache } from './modrinth'
+import { fetchAndCache } from './modrinth' 
 
 export type DepType = 'required' | 'optional' | 'incompatible' | 'embedded'
 
@@ -28,6 +28,7 @@ export interface ResolveResult {
   error?: string
 }
 
+// 메인 resolver
 export async function resolveDependencies(
   modrinthId: string,
   opts: { gameVersion?: string; loader?: string; selected?: Set<string> } = {}
@@ -53,10 +54,10 @@ export async function resolveDependencies(
     let modRow = fetchModRow(id, gameVersion, loader)
 
     if (!modRow) {
-      console.log(`[DFS Fallback] 로컬 DB에 ${id}가 없습니다. Modrinth API에서 다운로드합니다...`)
+      console.log(`[DFS Fallback] 로컬 DB에 ${id}가 없어 API에서 다운로드합니다...`)
       try {
-        await fetchAndCache(id) // API에서 데이터를 긁어와 로컬 DB에 저장
-        modRow = fetchModRow(id, gameVersion, loader) // 저장된 데이터를 DB에서 다시 조회
+        await fetchAndCache(id) // API 호출로 DB 업데이트
+        modRow = fetchModRow(id, gameVersion, loader) // DB 재조회
       } catch (err: any) {
         console.warn(`[DFS Fallback] ${id} 데이터를 가져오지 못했습니다:`, err.message)
       }
@@ -102,11 +103,12 @@ export async function resolveDependencies(
     return node
   }
 
+  // 실행
   try {
     const root = await dfs(modrinthId, 'required', 0)
 
     if (!root) {
-      return { ok: false, root: null, installOrder: [], required: [], optional: [], conflicts, error: '모드 정보를 찾을 수 없거나 호환되는 버전이 없습니다.' }
+      return { ok: false, root: null, installOrder: [], required: [], optional: [], conflicts, error: '모드를 찾을 수 없습니다' }
     }
 
     const installOrder = topoSort(root)
@@ -131,6 +133,7 @@ export async function resolveDependencies(
   }
 }
 
+// 위상 정렬
 function topoSort(root: DepNode): DepNode[] {
   const sorted: DepNode[] = []
   const seen = new Set<string>()
@@ -146,6 +149,7 @@ function topoSort(root: DepNode): DepNode[] {
   return sorted
 }
 
+// DB 조회 헬퍼
 interface ModRowRaw {
   modrinth_id: string
   name: string
@@ -168,7 +172,6 @@ function fetchModRow(modrinthId: string, gameVersion?: string, loader?: string):
     FROM mods m
     JOIN mod_versions mv ON mv.mod_id = m.id
     WHERE m.modrinth_id = ?
-      AND mv.version_type = 'release'
   `
   const params: any[] = [modrinthId]
 
@@ -177,10 +180,9 @@ function fetchModRow(modrinthId: string, gameVersion?: string, loader?: string):
     params.push(`%${gameVersion}%`)
   }
   if (loader) {
-    sql += ` AND mv.loaders LIKE ? `
-    params.push(`%${loader}%`)
+    sql += ` AND LOWER(mv.loaders) LIKE ? `
+    params.push(`%${loader.toLowerCase()}%`)
   }
-
   sql += ` ORDER BY mv.published_at DESC LIMIT 1`
 
   return db.prepare(sql).get(...params) as ModRowRaw | undefined ?? null
@@ -203,6 +205,7 @@ function fetchDeps(versionDbId: number): DepRowRaw[] {
   `).all(versionDbId) as DepRowRaw[]
 }
 
+// 선택된 모드 집합으로 재검증
 export async function validateSelection(
   modrinthIds: string[],
   opts: { gameVersion?: string; loader?: string } = {}

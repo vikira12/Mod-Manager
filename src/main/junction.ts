@@ -158,4 +158,41 @@ export function registerHandlers(win: BrowserWindow): void {
 
   // 유틸
   ipcMain.handle('open-folder', async (_e, folderPath: string) => shell.openPath(folderPath))
+
+  // 모든 프로필 가져오기
+  ipcMain.handle('get-profiles', async () => {
+    return db.prepare('SELECT * FROM profiles ORDER BY created_at DESC').all();
+  });
+
+  // 프로필 생성
+  ipcMain.handle('create-profile', async (_e, data: { name: string, gameVersion: string, loader: string }) => {
+    const info = db.prepare(
+      'INSERT INTO profiles (name, game_version, loader) VALUES (?, ?, ?)'
+    ).run(data.name, data.gameVersion, data.loader);
+    return { ok: true, id: info.lastInsertRowid };
+  });
+
+  // 프로필 삭제
+  ipcMain.handle('delete-profile', async (_e, id: string) => {
+    db.prepare('DELETE FROM profiles WHERE id = ?').run(id);
+    return { ok: true };
+  });
+
+  // 특정 프로필에 설치된 모드 목록 가져오기
+  ipcMain.handle('get-installed-mods', async (_e, profileId: string) => {
+    return db.prepare(`
+      SELECT m.*, mv.version_number, pm.installed_at 
+      FROM profile_mods pm
+      JOIN mods m ON pm.mod_id = m.id
+      JOIN mod_versions mv ON pm.mod_version_id = mv.id
+      WHERE pm.profile_id = ?
+    `).all(profileId);
+  });
+
+  // 모드 삭제 (프로필에서 제거)
+  ipcMain.handle('uninstall-mod', async (_e, profileId: string, modId: string) => {
+    db.prepare('DELETE FROM profile_mods WHERE profile_id = ? AND mod_id = ?')
+      .run(profileId, modId);
+    return { ok: true };
+  });
 }

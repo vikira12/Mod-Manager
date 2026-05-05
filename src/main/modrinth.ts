@@ -90,6 +90,7 @@ function saveVersions(modId: number, versions: any[]): void {
     ON CONFLICT (modrinth_ver_id) DO UPDATE SET
       version_number=EXCLUDED.version_number,
       game_versions=EXCLUDED.game_versions,
+      loaders=EXCLUDED.loaders,
       is_featured=EXCLUDED.is_featured,
       synced_at=CURRENT_TIMESTAMP
     RETURNING id
@@ -130,8 +131,8 @@ export async function fetchAndCache(modrinthId: string): Promise<number> {
   const gameRes = db.prepare(`SELECT id FROM games WHERE slug='minecraft'`).get() as { id: number }
   const gameId = gameRes.id
 
-  const { data: project } = await api.get(`/project/${modrinthId}`)
-  const { data: versions } = await api.get(`/project/${modrinthId}/version`)
+  const { data: project } = await withRetry(() => api.get(`/project/${modrinthId}`))
+  const { data: versions } = await withRetry(() => api.get(`/project/${modrinthId}/version`))
 
   const saveTransaction = db.transaction(() => {
     const modId = saveMod(gameId, project)
@@ -217,7 +218,6 @@ export async function searchLocal(
       mv.file_url, mv.file_name
     FROM mods m
     LEFT JOIN mod_versions mv ON mv.mod_id = m.id 
-      AND mv.version_type = 'release'
       -- 서브쿼리 최적화를 위해 JOIN으로 풀고, 최신 버전 하나만 가져오도록 그룹핑
   `
   
@@ -262,7 +262,6 @@ export async function getDependencies(
     SELECT mv.id AS ver_id
     FROM mods m
     JOIN mod_versions mv ON mv.mod_id = m.id
-    WHERE m.modrinth_id = ? AND mv.version_type = 'release'
   `
   const verParams: any[] = [modrinthId]
 
@@ -284,7 +283,6 @@ export async function getDependencies(
       mv2.version_number, mv2.modrinth_ver_id, mv2.file_url, mv2.file_name
     FROM mod_dependencies d
     LEFT JOIN mods m ON m.id = d.depends_on_mod_id
-    LEFT JOIN mod_versions mv2 ON mv2.mod_id = m.id AND mv2.version_type = 'release'
   `
   const depParams: any[] = []
 

@@ -117,6 +117,12 @@ export interface ElectronAPI {
   
   onSyncProgress:     (cb: (data: SyncProgress) => void)    => () => void
   onInstallProgress:  (cb: (data: InstallProgress) => void) => () => void
+
+  getProfiles: () => Promise<any[]>
+  createProfile: (data: { name: string; gameVersion: string; loader: string }) => Promise<{ ok: boolean; id?: number }>
+  deleteProfile: (id: string) => Promise<{ ok: boolean }>
+  getInstalledMods: (profileId: string) => Promise<any[]>
+  uninstallMod: (profileId: string, modId: string) => Promise<{ ok: boolean }>
 }
 
 declare global {

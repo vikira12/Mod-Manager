@@ -283,6 +283,7 @@ export async function getDependencies(
       mv2.version_number, mv2.modrinth_ver_id, mv2.file_url, mv2.file_name
     FROM mod_dependencies d
     LEFT JOIN mods m ON m.id = d.depends_on_mod_id
+    LEFT JOIN mod_versions mv2 ON mv2.mod_id = m.id
   `
   const depParams: any[] = []
 

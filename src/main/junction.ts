@@ -2,6 +2,7 @@ import { ipcMain, shell, BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import axios from 'axios'
+import { db } from './db'
 import {
   searchLocal, searchRemote, getDependencies,
   syncModrinth, getSyncStatus,
@@ -184,7 +185,7 @@ export function registerHandlers(win: BrowserWindow): void {
       SELECT m.*, mv.version_number, pm.installed_at 
       FROM profile_mods pm
       JOIN mods m ON pm.mod_id = m.id
-      JOIN mod_versions mv ON pm.mod_version_id = mv.id
+      LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
       WHERE pm.profile_id = ?
     `).all(profileId);
   });
@@ -193,6 +194,36 @@ export function registerHandlers(win: BrowserWindow): void {
   ipcMain.handle('uninstall-mod', async (_e, profileId: string, modId: string) => {
     db.prepare('DELETE FROM profile_mods WHERE profile_id = ? AND mod_id = ?')
       .run(profileId, modId);
+    return { ok: true };
+  });
+
+  ipcMain.handle('save-profile-mods', async (_e, profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => {
+    const findVersion = db.prepare(`
+      SELECT id
+      FROM mod_versions
+      WHERE mod_id = ?
+      ORDER BY published_at DESC
+      LIMIT 1
+    `);
+    const insert = db.prepare(`
+      INSERT INTO profile_mods (profile_id, mod_id, mod_version_id)
+      VALUES (?, ?, ?)
+      ON CONFLICT(profile_id, mod_id) DO UPDATE SET
+        mod_version_id = excluded.mod_version_id,
+        installed_at = CURRENT_TIMESTAMP
+    `);
+
+    db.transaction((items) => {
+      for (const item of items) {
+        const modId = typeof item === 'number' ? item : item.id;
+        const explicitVersionId = typeof item === 'number' ? undefined : item.ver_id;
+        const version = explicitVersionId
+          ? { id: explicitVersionId }
+          : findVersion.get(modId) as { id: number } | undefined;
+
+        if (version) insert.run(profileId, modId, version.id);
+      }
+    })(mods);
     return { ok: true };
   });
 }

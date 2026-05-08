@@ -1,5 +1,6 @@
 export interface ModRow {
   id?: number
+  ver_id?: number
   modrinth_id: string
   name: string
   slug: string
@@ -12,7 +13,9 @@ export interface ModRow {
   modrinth_ver_id: string
   file_url: string | null
   file_name: string | null
-  dep_type?: 'required' | 'optional'
+  dep_type?: DepType
+  depth?: number
+  children?: DepNode[]
   source?: 'local' | 'api' | 'mixed'
 }
 
@@ -67,6 +70,8 @@ export interface InstallProgress {
 export type DepType = 'required' | 'optional' | 'incompatible' | 'embedded'
 
 export interface DepNode {
+  id:              number
+  ver_id:          number
   modrinth_id:     string
   name:            string
   description:     string
@@ -123,6 +128,7 @@ export interface ElectronAPI {
   deleteProfile: (id: string) => Promise<{ ok: boolean }>
   getInstalledMods: (profileId: string) => Promise<any[]>
   uninstallMod: (profileId: string, modId: string) => Promise<{ ok: boolean }>
+  saveProfileMods: (profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => Promise<{ ok: boolean }>
 }
 
 declare global {

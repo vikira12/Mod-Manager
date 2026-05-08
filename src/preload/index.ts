@@ -65,6 +65,9 @@ const api: ElectronAPI = {
     
   uninstallMod: (profileId, modId) => 
     ipcRenderer.invoke('uninstall-mod', profileId, modId),
+
+  saveProfileMods: (profileId, modIds) => 
+    ipcRenderer.invoke('save-profile-mods', profileId, modIds),
 }
 
 contextBridge.exposeInMainWorld('electron', api)

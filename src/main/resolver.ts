@@ -4,6 +4,8 @@ import { fetchAndCache } from './modrinth'
 export type DepType = 'required' | 'optional' | 'incompatible' | 'embedded'
 
 export interface DepNode {
+  id: number
+  ver_id: number
   modrinth_id: string
   name: string
   description: string
@@ -31,7 +33,7 @@ export interface ResolveResult {
 // 메인 resolver
 export async function resolveDependencies(
   modrinthId: string,
-  opts: { gameVersion?: string; loader?: string; selected?: Set<string> } = {}
+  opts: { gameVersion?: string; loader?: string; selected?: Iterable<string> } = {}
 ): Promise<ResolveResult> {
   const { gameVersion, loader, selected = new Set<string>() } = opts
 
@@ -151,6 +153,7 @@ function topoSort(root: DepNode): DepNode[] {
 
 // DB 조회 헬퍼
 interface ModRowRaw {
+  id: number
   modrinth_id: string
   name: string
   description: string
@@ -166,6 +169,7 @@ interface ModRowRaw {
 function fetchModRow(modrinthId: string, gameVersion?: string, loader?: string): ModRowRaw | null {
   let sql = `
     SELECT
+      m.id,
       m.modrinth_id, m.name, m.description, m.icon_url, m.downloads,
       mv.version_number, mv.modrinth_ver_id, mv.file_url, mv.file_name,
       mv.id AS ver_id

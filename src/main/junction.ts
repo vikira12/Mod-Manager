@@ -8,6 +8,12 @@ import {
   syncModrinth, getSyncStatus,
 } from './modrinth'
 import { resolveDependencies, validateSelection } from './resolver'
+import { getDefaultModsPath, scanModJars } from './jarScanner'
+import {
+  dbRowsToConflictSubjects,
+  getCustomRuleConflicts,
+  jarModsToConflictSubjects,
+} from './conflicts'
 
 export function registerHandlers(win: BrowserWindow): void {
 
@@ -27,6 +33,72 @@ export function registerHandlers(win: BrowserWindow): void {
       return await validateSelection(modrinthIds, opts)
     } catch (err: any) {
       return { ok: false, conflicts: [], error: err.message }
+    }
+  })
+
+  ipcMain.handle('scan-mod-jars', async (_e, modsPath?: string) => {
+    try {
+      return { ok: true, mods: scanModJars(modsPath || getDefaultModsPath()) }
+    } catch (err: any) {
+      return { ok: false, mods: [], error: err.message }
+    }
+  })
+
+  ipcMain.handle('validate-install-plan', async (_e, data: {
+    profileId: string
+    selectedMods: any[]
+    installPath?: string
+    gameVersion?: string
+    loader?: string
+  }) => {
+    try {
+      const installedRows = db.prepare(`
+        SELECT m.modrinth_id, m.slug, m.name, mv.version_number
+        FROM profile_mods pm
+        JOIN mods m ON pm.mod_id = m.id
+        LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
+        WHERE pm.profile_id = ?
+      `).all(data.profileId)
+
+      const scannedJars = scanModJars(data.installPath || getDefaultModsPath())
+      const subjects = [
+        ...dbRowsToConflictSubjects(installedRows),
+        ...jarModsToConflictSubjects(scannedJars),
+        ...dbRowsToConflictSubjects(data.selectedMods ?? [], 'selection'),
+      ]
+
+      const customConflicts = getCustomRuleConflicts(subjects, {
+        gameVersion: data.gameVersion,
+        loader: data.loader,
+      })
+
+      const selectedIds = [
+        ...installedRows.map((row: any) => row.modrinth_id).filter(Boolean),
+        ...(data.selectedMods ?? []).map((row: any) => row.modrinth_id).filter(Boolean),
+      ]
+      const modrinthValidation = await validateSelection(selectedIds, {
+        gameVersion: data.gameVersion,
+        loader: data.loader,
+      })
+
+      const modrinthConflicts = modrinthValidation.conflicts.map((conflict) => ({
+        type: 'modrinth' as const,
+        severity: 'blocker' as const,
+        a: subjects.find((subject) => subject.modrinth_id === conflict.a) ?? { modrinth_id: conflict.a },
+        b: subjects.find((subject) => subject.modrinth_id === conflict.b) ?? { modrinth_id: conflict.b },
+        reason: 'Modrinth 의존성 정보에서 incompatible 관계로 표시된 조합입니다.',
+        source: 'modrinth',
+      }))
+
+      const conflicts = [...modrinthConflicts, ...customConflicts]
+
+      return {
+        ok: conflicts.every((conflict) => conflict.severity !== 'blocker'),
+        conflicts,
+        scannedJars,
+      }
+    } catch (err: any) {
+      return { ok: false, conflicts: [], scannedJars: [], error: err.message }
     }
   })
 

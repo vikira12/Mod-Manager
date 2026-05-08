@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import type { ModRow } from '../../preload/index.d'
+import type { ConflictDetail, ModRow, ScannedJarMod } from '../../preload/index.d'
 
 // --- Types ---
 type Page = 'search' | 'installed' | 'profiles' | 'settings'
@@ -42,6 +42,8 @@ export default function App() {
   const [depResults, setDepResults] = useState<ModRow[]>([])
   const [error, setError] = useState('')
   const [hasBlockingConflict, setHasBlockingConflict] = useState(false)
+  const [conflictDetails, setConflictDetails] = useState<ConflictDetail[]>([])
+  const [scannedJars, setScannedJars] = useState<ScannedJarMod[]>([])
 
   // --- Install States ---
   const [installStatus, setInstSt] = useState<'idle'|'installing'|'done'|'error'>('idle')
@@ -55,6 +57,10 @@ export default function App() {
   // 활성 프로필이 바뀌면 검색 화면에서도 충돌 검사용 설치 목록을 최신화
   useEffect(() => {
     if (activeProfile) loadInstalledMods(activeProfile.id)
+  }, [activeProfile])
+
+  useEffect(() => {
+    if (activeProfile) refreshJarScan()
   }, [activeProfile])
 
   const loadProfiles = async () => {
@@ -71,6 +77,31 @@ export default function App() {
     const mods = await api.getInstalledMods(profileId)
     setInstalledMods(mods)
     return mods
+  }
+
+  const getInstallPath = () => activeProfile?.install_path || undefined
+
+  const refreshJarScan = async () => {
+    const res = await api.scanModJars(getInstallPath())
+    if (res.ok) setScannedJars(res.mods)
+    return res.ok ? res.mods : []
+  }
+
+  const validateCurrentPlan = async (selectedMods: ModRow[]) => {
+    if (!activeProfile) return { ok: true, conflicts: [], scannedJars: [] }
+
+    const result = await api.validateInstallPlan({
+      profileId: String(activeProfile.id),
+      selectedMods,
+      installPath: getInstallPath(),
+      gameVersion: activeProfile.game_version,
+      loader: activeProfile.loader,
+    })
+
+    setConflictDetails(result.conflicts ?? [])
+    setScannedJars(result.scannedJars ?? [])
+    setHasBlockingConflict((result.conflicts ?? []).some(c => c.severity === 'blocker'))
+    return result
   }
 
   // 프로필 생성
@@ -123,7 +154,7 @@ export default function App() {
   const handleSelectMod = async (mod: ModRow) => {
     if (!activeProfile) { alert('프로필을 먼저 선택해 주세요!'); return; }
     
-    setSearching(true); setError(''); setHasBlockingConflict(false); setDepResults([]); setSelected(new Set()); setInstSt('idle')
+    setSearching(true); setError(''); setHasBlockingConflict(false); setConflictDetails([]); setDepResults([]); setSelected(new Set()); setInstSt('idle')
     try {
       // 설치된 모드 ID 추출
       const currentInstalled = await loadInstalledMods(activeProfile.id)
@@ -158,13 +189,10 @@ export default function App() {
         flat.filter(m => m.dep_type === 'required' || m.modrinth_id === resolved.root?.modrinth_id).map(m => m.modrinth_id)
       )
 
-      const validation = await api.validateSelection([...installedIds, ...Array.from(autoSelect)], {
-        gameVersion: activeProfile.game_version,
-        loader: activeProfile.loader,
-      })
+      const selectedMods = flat.filter(m => autoSelect.has(m.modrinth_id))
+      const validation = await validateCurrentPlan(selectedMods)
 
       if (!validation.ok) {
-        setHasBlockingConflict(true)
         setError(`[경고] 모드 간 충돌이 발생했습니다 (${validation.conflicts.length}건)`)
       }
 
@@ -183,17 +211,12 @@ export default function App() {
     next.has(id) ? next.delete(id) : next.add(id)
     setSelected(next)
 
-    const allModsToCheck = [...installedMods.map(m=>m.modrinth_id), ...Array.from(next)]
-    const validation = await api.validateSelection(allModsToCheck, {
-      gameVersion: activeProfile.game_version,
-      loader: activeProfile.loader,
-    })
+    const selectedMods = depResults.filter(m => next.has(m.modrinth_id))
+    const validation = await validateCurrentPlan(selectedMods)
     
     if (!validation.ok) {
-      setHasBlockingConflict(true)
       setError(`[경고] 모드 간 충돌이 발생했습니다 (${validation.conflicts.length}건)`)
     } else {
-      setHasBlockingConflict(false)
       setError('')
     }
   }
@@ -208,6 +231,12 @@ export default function App() {
 
     const installedIdSet = new Set(installedMods.map(m => m.modrinth_id))
     const toInstall = depResults.filter(m => selected.has(m.modrinth_id) && !installedIdSet.has(m.modrinth_id))
+    const validation = await validateCurrentPlan(toInstall)
+    if (!validation.ok) {
+      setError(`[경고] 설치 전에 충돌이 감지되었습니다 (${validation.conflicts.length}건)`)
+      return
+    }
+
     setInstSt('installing')
     try {
       const res = await api.downloadMods(toInstall, activeProfile.install_path || '.minecraft/mods')
@@ -301,6 +330,13 @@ export default function App() {
             </div>
 
             {error && <div style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+            {scannedJars.length > 0 && (
+              <div style={s.scanBanner}>
+                <Icon.Package />
+                <span>mods 폴더 jar {scannedJars.length}개를 함께 검사 중입니다.</span>
+              </div>
+            )}
+            {conflictDetails.length > 0 && <ConflictPanel conflicts={conflictDetails} />}
 
             {viewMode === 'list' && searchResults.length > 0 && (
               <>
@@ -466,6 +502,31 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
   )
 }
 
+function ConflictPanel({ conflicts }: { conflicts: ConflictDetail[] }) {
+  return (
+    <div style={s.conflictPanel}>
+      <div style={s.conflictTitle}><Icon.Alert /> 충돌 상세</div>
+      {conflicts.map((conflict, index) => (
+        <div key={`${conflict.source}-${index}`} style={s.conflictItem}>
+          <div style={s.conflictTop}>
+            <span style={conflict.severity === 'blocker' ? s.blockerBadge : s.warnBadge}>
+              {conflict.severity === 'blocker' ? '설치 차단' : '주의'}
+            </span>
+            <span style={s.conflictNames}>{subjectName(conflict.a)} ↔ {subjectName(conflict.b)}</span>
+          </div>
+          <div style={s.conflictReason}>{conflict.reason}</div>
+          <div style={s.conflictSource}>{conflict.type === 'modrinth' ? 'Modrinth 호환성 데이터' : `자체 규칙 DB · ${conflict.source}`}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function subjectName(subject: ConflictDetail['a']) {
+  const version = subject.version_number ? ` v${subject.version_number}` : ''
+  return `${subject.name ?? subject.slug ?? subject.jar_mod_id ?? subject.modrinth_id ?? '알 수 없는 모드'}${version}`
+}
+
 // --- Styles ---
 const s: Record<string, React.CSSProperties> = {
   root: { display: 'flex', height: '100vh', background: '#0f0f11', color: '#e8e8ea', fontFamily: "'Apple SD Gothic Neo', sans-serif" },
@@ -494,6 +555,16 @@ const s: Record<string, React.CSSProperties> = {
   backBtn: { background: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: 0 },
 
   errorBanner: { background: '#1c0a0a', border: '1px solid #3f1515', color: '#f87171', padding: '10px 15px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15, fontSize: 13 },
+  scanBanner: { background: '#111827', border: '1px solid #263247', color: '#9ca3af', padding: '9px 14px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15, fontSize: 12 },
+  conflictPanel: { border: '1px solid #3f1515', background: '#140909', borderRadius: 8, padding: 12, marginBottom: 15 },
+  conflictTitle: { color: '#fecaca', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 },
+  conflictItem: { borderTop: '1px solid #2f1717', paddingTop: 10, marginTop: 10 },
+  conflictTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  conflictNames: { color: '#f4f4f5', fontWeight: 'bold', fontSize: 13 },
+  conflictReason: { color: '#d4d4d8', fontSize: 12, lineHeight: 1.45 },
+  conflictSource: { color: '#71717a', fontSize: 11, marginTop: 6 },
+  blockerBadge: { fontSize: 11, color: '#fee2e2', background: '#7f1d1d', padding: '2px 7px', borderRadius: 4 },
+  warnBadge: { fontSize: 11, color: '#fef3c7', background: '#78350f', padding: '2px 7px', borderRadius: 4 },
   
   depList: { display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 20 },
   modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 15px', borderRadius: 10, background: '#18181b', border: '1px solid #2a2a2e' },

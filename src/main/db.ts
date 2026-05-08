@@ -108,15 +108,42 @@ export function migrate(): void {
         )
       `).run()
 
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS conflict_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          left_key TEXT NOT NULL,
+          right_key TEXT NOT NULL,
+          severity TEXT CHECK (severity IN ('warning','blocker')) DEFAULT 'blocker',
+          reason TEXT NOT NULL,
+          source TEXT DEFAULT 'local',
+          game_versions TEXT,
+          loaders TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(left_key, right_key)
+        )
+      `).run()
+
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_mods_modrinth ON mods(modrinth_id)`).run()
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_mods_name ON mods(name)`).run()
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_versions_mod ON mod_versions(mod_id)`).run()
       db.prepare(`CREATE INDEX IF NOT EXISTS idx_deps_ver ON mod_dependencies(mod_version_id)`).run()
+      db.prepare(`CREATE INDEX IF NOT EXISTS idx_conflict_rules_keys ON conflict_rules(left_key, right_key)`).run()
 
       // 기본 데이터(Minecraft) 넣기 (ON CONFLICT DO NOTHING -> INSERT OR IGNORE)
       db.prepare(`
         INSERT OR IGNORE INTO games (name, slug) VALUES ('Minecraft', 'minecraft')
       `).run()
+
+      const seedRule = db.prepare(`
+        INSERT OR IGNORE INTO conflict_rules
+          (left_key, right_key, severity, reason, source, loaders)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `)
+
+      seedRule.run('optifine', 'sodium', 'blocker', 'OptiFine과 Sodium은 둘 다 렌더링 파이프라인을 크게 바꿔 함께 쓰기 어렵습니다.', 'seed', JSON.stringify(['fabric']))
+      seedRule.run('optifine', 'iris', 'warning', 'Iris/Sodium 기반 셰이더 환경과 OptiFine 기반 셰이더 환경은 서로 다른 렌더링 스택을 사용합니다.', 'seed', JSON.stringify(['fabric']))
+      seedRule.run('rubidium', 'sodium', 'blocker', 'Rubidium은 Sodium 계열 Forge 포트라 같은 역할의 렌더링 최적화 모드와 중복될 수 있습니다.', 'seed', JSON.stringify(['forge']))
+      seedRule.run('oculus', 'iris', 'warning', 'Oculus와 Iris는 셰이더 로더 계열이 겹쳐 같은 환경에 동시에 둘 필요가 거의 없습니다.', 'seed', null)
     })
 
     init()

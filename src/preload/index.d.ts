@@ -102,6 +102,41 @@ export interface ValidationResult {
   error?:    string
 }
 
+export interface ScannedJarMod {
+  source: 'jar'
+  file_path: string
+  file_name: string
+  jar_mod_id: string | null
+  name: string
+  version_number: string | null
+  loader: 'fabric' | 'forge' | 'quilt' | 'unknown'
+}
+
+export interface ConflictSubject {
+  modrinth_id?: string | null
+  slug?: string | null
+  jar_mod_id?: string | null
+  name?: string | null
+  version_number?: string | null
+  source?: string
+}
+
+export interface ConflictDetail {
+  type: 'modrinth' | 'custom-rule'
+  severity: 'warning' | 'blocker'
+  a: ConflictSubject
+  b: ConflictSubject
+  reason: string
+  source: string
+}
+
+export interface InstallPlanValidationResult {
+  ok: boolean
+  conflicts: ConflictDetail[]
+  scannedJars: ScannedJarMod[]
+  error?: string
+}
+
 export interface ElectronAPI {
   searchMod:          (query: string, opts?: { loader?: string; gameVersion?: string }) => Promise<SearchResult>
   getDependencies:    (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<DependencyResult>
@@ -109,6 +144,14 @@ export interface ElectronAPI {
   // 의존성 해결 엔진
   resolveDeps:        (modrinthId: string, opts?: { gameVersion?: string; loader?: string; selected?: string[] }) => Promise<ResolveResult>
   validateSelection:  (modrinthIds: string[], opts?: { gameVersion?: string; loader?: string }) => Promise<ValidationResult>
+  scanModJars:        (modsPath?: string) => Promise<{ ok: boolean; mods: ScannedJarMod[]; error?: string }>
+  validateInstallPlan: (data: {
+    profileId: string
+    selectedMods: ModRow[]
+    installPath?: string
+    gameVersion?: string
+    loader?: string
+  }) => Promise<InstallPlanValidationResult>
 
   downloadMods:       (mods: ModRow[], installPath?: string) => Promise<InstallResult>
   

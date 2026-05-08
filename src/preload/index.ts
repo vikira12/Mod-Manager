@@ -16,6 +16,12 @@ const api: ElectronAPI = {
   validateSelection: (modrinthIds, opts = {}) =>
     ipcRenderer.invoke('validate-selection', modrinthIds, opts),
 
+  scanModJars: (modsPath) =>
+    ipcRenderer.invoke('scan-mod-jars', modsPath),
+
+  validateInstallPlan: (data) =>
+    ipcRenderer.invoke('validate-install-plan', data),
+
   // 모드 설치
   downloadMods: (mods, installPath) =>
     ipcRenderer.invoke('download-mods', mods, installPath),

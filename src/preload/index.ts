@@ -6,6 +6,9 @@ const api: ElectronAPI = {
   searchMod: (query, opts = {}) =>
     ipcRenderer.invoke('search-mod', query, opts),
 
+  getRecommendations: (data) =>
+    ipcRenderer.invoke('get-recommendations', data),
+
   // 의존성 처리
   getDependencies: (modrinthId, opts = {}) =>
     ipcRenderer.invoke('get-dependencies', modrinthId, opts),
@@ -68,6 +71,12 @@ const api: ElectronAPI = {
     
   getInstalledMods: (profileId) => 
     ipcRenderer.invoke('get-installed-mods', profileId),
+
+  exportProfilePack: (profileId) =>
+    ipcRenderer.invoke('export-profile-pack', profileId),
+
+  importProfilePack: () =>
+    ipcRenderer.invoke('import-profile-pack'),
     
   uninstallMod: (profileId, modId) => 
     ipcRenderer.invoke('uninstall-mod', profileId, modId),

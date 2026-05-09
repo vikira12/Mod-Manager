@@ -17,6 +17,8 @@ export interface ModRow {
   depth?: number
   children?: DepNode[]
   source?: 'local' | 'api' | 'mixed'
+  recommendation_score?: number
+  recommendation_reason?: string
 }
 
 export interface SearchResult {
@@ -102,6 +104,12 @@ export interface ValidationResult {
   error?:    string
 }
 
+export interface RecommendationResult {
+  ok: boolean
+  recommendations: ModRow[]
+  error?: string
+}
+
 export interface ScannedJarMod {
   source: 'jar'
   file_path: string
@@ -137,8 +145,30 @@ export interface InstallPlanValidationResult {
   error?: string
 }
 
+export interface ExportPackResult {
+  ok: boolean
+  canceled?: boolean
+  filePath?: string
+  modCount?: number
+  localJarCount?: number
+  error?: string
+}
+
+export interface ImportPackResult {
+  ok: boolean
+  canceled?: boolean
+  profileId?: number
+  profileName?: string
+  imported?: number
+  downloaded?: number
+  localJarCount?: number
+  failed?: { name: string; reason: string }[]
+  error?: string
+}
+
 export interface ElectronAPI {
   searchMod:          (query: string, opts?: { loader?: string; gameVersion?: string }) => Promise<SearchResult>
+  getRecommendations: (data: { profileId: string; loader?: string; gameVersion?: string; limit?: number }) => Promise<RecommendationResult>
   getDependencies:    (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<DependencyResult>
 
   // 의존성 해결 엔진
@@ -170,6 +200,8 @@ export interface ElectronAPI {
   createProfile: (data: { name: string; gameVersion: string; loader: string }) => Promise<{ ok: boolean; id?: number }>
   deleteProfile: (id: string) => Promise<{ ok: boolean }>
   getInstalledMods: (profileId: string) => Promise<any[]>
+  exportProfilePack: (profileId: string) => Promise<ExportPackResult>
+  importProfilePack: () => Promise<ImportPackResult>
   uninstallMod: (profileId: string, modId: string) => Promise<{ ok: boolean }>
   saveProfileMods: (profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => Promise<{ ok: boolean }>
 }

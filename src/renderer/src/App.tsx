@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react'
 import type { ConflictDetail, ModRow, ScannedJarMod } from '../../preload/index.d'
 
 // --- Types ---
-type Page = 'search' | 'installed' | 'profiles' | 'settings'
+type Page = 'search' | 'recommended' | 'installed' | 'profiles'
 type ViewMode = 'list' | 'detail'
 
 // --- Inline Icons ---
 const Icon = {
   Search:    () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>,
+  Sparkles:  () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m12 3 1.7 5.2L19 10l-5.3 1.8L12 17l-1.7-5.2L5 10l5.3-1.8L12 3z"/><path d="m19 15 .7 2.2L22 18l-2.3.8L19 21l-.7-2.2L16 18l2.3-.8L19 15z"/></svg>,
   Package:   () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>,
   User:      () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>,
   Settings:  () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>,
@@ -32,11 +33,17 @@ export default function App() {
 
   // --- Installed Mods State ---
   const [installedMods, setInstalledMods] = useState<any[]>([])
+  const [exportStatus, setExportStatus] = useState('')
+  const [isExporting, setExporting] = useState(false)
+  const [importStatus, setImportStatus] = useState('')
+  const [isImporting, setImporting] = useState(false)
 
   // --- Search & UI States ---
   const [query, setQuery] = useState('')
   const [isSearching, setSearching] = useState(false)
   const [searchResults, setSearchResults] = useState<ModRow[]>([])
+  const [recommendedMods, setRecommendedMods] = useState<ModRow[]>([])
+  const [isLoadingRecs, setLoadingRecs] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [depResults, setDepResults] = useState<ModRow[]>([])
@@ -63,6 +70,10 @@ export default function App() {
     if (activeProfile) refreshJarScan()
   }, [activeProfile])
 
+  useEffect(() => {
+    if (activeProfile && page === 'recommended') loadRecommendations()
+  }, [activeProfile, page])
+
   const loadProfiles = async () => {
     try {
       const list = await api.getProfiles()
@@ -85,6 +96,30 @@ export default function App() {
     const res = await api.scanModJars(getInstallPath())
     if (res.ok) setScannedJars(res.mods)
     return res.ok ? res.mods : []
+  }
+
+  const loadRecommendations = async () => {
+    if (!activeProfile) return
+    setLoadingRecs(true)
+    setError('')
+    try {
+      const res = await api.getRecommendations({
+        profileId: String(activeProfile.id),
+        loader: activeProfile.loader,
+        gameVersion: activeProfile.game_version,
+        limit: 12,
+      })
+      if (!res.ok) {
+        setError(res.error ?? '추천 모드를 불러오지 못했습니다')
+        setRecommendedMods([])
+        return
+      }
+      setRecommendedMods(res.recommendations)
+    } catch (e: any) {
+      setError(e.message)
+    } finally {
+      setLoadingRecs(false)
+    }
   }
 
   const validateCurrentPlan = async (selectedMods: ModRow[]) => {
@@ -126,6 +161,50 @@ export default function App() {
     if (!activeProfile || !confirm('이 프로필에서 모드를 제거하시겠습니까? (파일은 삭제되지 않고 프로필에서만 제외됩니다)')) return
     await api.uninstallMod(activeProfile.id, modId)
     loadInstalledMods(activeProfile.id)
+  }
+
+  const handleExportPack = async () => {
+    if (!activeProfile) return
+    setExporting(true)
+    setExportStatus('')
+    try {
+      const res = await api.exportProfilePack(String(activeProfile.id))
+      if (res.canceled) return
+      if (!res.ok) {
+        setExportStatus(res.error ?? '모드팩 내보내기에 실패했습니다.')
+        return
+      }
+      setExportStatus(`${res.modCount ?? 0}개 모드와 수동 jar ${res.localJarCount ?? 0}개 정보를 내보냈습니다.`)
+    } catch (e: any) {
+      setExportStatus(e.message)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const handleImportPack = async () => {
+    setImporting(true)
+    setImportStatus('')
+    try {
+      const res = await api.importProfilePack()
+      if (res.canceled) return
+      if (!res.ok) {
+        const failText = res.failed?.length ? ` (${res.failed.length}개 실패)` : ''
+        setImportStatus(`${res.error ?? '모드팩 가져오기에 실패했습니다.'}${failText}`)
+        return
+      }
+      setImportStatus(`${res.profileName} 프로필로 ${res.imported ?? 0}개 모드를 가져오고 ${res.downloaded ?? 0}개 파일을 다운로드했습니다.`)
+      await loadProfiles()
+      if (res.profileId) {
+        const list = await api.getProfiles()
+        setProfiles(list)
+        setActive(list.find(p => Number(p.id) === res.profileId) ?? null)
+      }
+    } catch (e: any) {
+      setImportStatus(e.message)
+    } finally {
+      setImporting(false)
+    }
   }
 
   // --- 코어 엔진 로직: 검색 ---
@@ -272,7 +351,12 @@ export default function App() {
       {/* --- 사이드바 --- */}
       <aside style={s.sidebar}>
         <div style={s.logo}>
-          <div style={s.logoMark}>MF</div>
+          <div style={s.logoMark}>
+            <div style={s.logoCube}>
+              <span style={s.logoCubeTop} />
+              <span style={s.logoCubeSide} />
+            </div>
+          </div>
           <span style={s.logoText}>ModForge</span>
         </div>
 
@@ -297,6 +381,7 @@ export default function App() {
 
         <nav style={s.nav}>
           <button onClick={() => setPage('search')} style={{...s.navBtn, ...(page === 'search' ? s.navActive : {})}}><Icon.Search /> 모드 검색</button>
+          <button onClick={() => setPage('recommended')} style={{...s.navBtn, ...(page === 'recommended' ? s.navActive : {})}}><Icon.Sparkles /> 추천 모드</button>
           <button onClick={() => setPage('installed')} style={{...s.navBtn, ...(page === 'installed' ? s.navActive : {})}}><Icon.Package /> 설치된 모드</button>
           <button onClick={() => setPage('profiles')} style={{...s.navBtn, ...(page === 'profiles' ? s.navActive : {})}}><Icon.User /> 프로필 관리</button>
         </nav>
@@ -395,13 +480,57 @@ export default function App() {
           </div>
         )}
 
+        {/* 2. 추천 모드 페이지 */}
+        {page === 'recommended' && (
+          <div style={s.page}>
+            <div style={s.pageHead}>
+              <h1 style={s.pageTitle}>추천 모드</h1>
+              <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name}에 설치된 모드 성향을 기준으로 골랐습니다.` : '프로필을 먼저 선택해 주세요'}</p>
+            </div>
+
+            {error && <div style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+
+            <div style={s.recommendHero}>
+              <div>
+                <div style={s.heroKicker}><Icon.Sparkles /> Profile Match</div>
+                <div style={s.heroTitle}>지금 구성과 잘 맞는 다음 모드</div>
+                <div style={s.heroSub}>카테고리, 로더, 게임 버전, 다운로드 지표를 함께 봅니다.</div>
+              </div>
+              <button style={s.ghostBtn} onClick={loadRecommendations} disabled={isLoadingRecs}>
+                {isLoadingRecs ? '분석 중...' : '다시 추천'}
+              </button>
+            </div>
+
+            {isLoadingRecs ? (
+              <p style={s.mutedTxt}>설치된 모드 구성을 분석하고 있습니다...</p>
+            ) : recommendedMods.length === 0 ? (
+              <div style={s.empty}>
+                <Icon.Sparkles />
+                <p style={{marginTop: 10}}>추천하려면 먼저 DB 동기화나 모드 설치가 필요합니다.</p>
+              </div>
+            ) : (
+              <div style={s.recommendGrid}>
+                {recommendedMods.map(mod => (
+                  <RecommendationCard key={mod.modrinth_id} mod={mod} onSelect={() => handleSelectMod(mod)} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* 2. 설치된 모드 페이지 */}
         {page === 'installed' && (
           <div style={s.page}>
-            <div style={s.pageHead}>
-              <h1 style={s.pageTitle}>설치된 모드</h1>
-              <p style={s.pageDesc}>{activeProfile?.name} 프로필에 설치된 모드 목록입니다.</p>
+            <div style={s.pageHeadRow}>
+              <div>
+                <h1 style={s.pageTitle}>설치된 모드</h1>
+                <p style={s.pageDesc}>{activeProfile?.name} 프로필에 설치된 모드 목록입니다.</p>
+              </div>
+              <button style={s.primaryBtnTall} onClick={handleExportPack} disabled={!activeProfile || isExporting}>
+                <Icon.Download /> {isExporting ? '내보내는 중...' : '모드팩 내보내기'}
+              </button>
             </div>
+            {exportStatus && <div style={s.scanBanner}><Icon.Check /><span>{exportStatus}</span></div>}
             <div style={s.listWrap}>
               {installedMods.length === 0 ? (
                 <div style={s.empty}>
@@ -426,10 +555,16 @@ export default function App() {
         {/* 3. 프로필 관리 페이지 */}
         {page === 'profiles' && (
           <div style={s.page}>
-            <div style={s.pageHead}>
-              <h1 style={s.pageTitle}>프로필 관리</h1>
-              <p style={s.pageDesc}>게임 버전, 로더별로 모드 세트를 분리 관리합니다.</p>
+            <div style={s.pageHeadRow}>
+              <div>
+                <h1 style={s.pageTitle}>프로필 관리</h1>
+                <p style={s.pageDesc}>게임 버전, 로더별로 모드 세트를 분리 관리합니다.</p>
+              </div>
+              <button style={s.primaryBtnTall} onClick={handleImportPack} disabled={isImporting}>
+                <Icon.Download /> {isImporting ? '가져오는 중...' : '모드팩 가져오기'}
+              </button>
             </div>
+            {importStatus && <div style={s.scanBanner}><Icon.Package /><span>{importStatus}</span></div>}
 
             <div style={s.profileGrid}>
               {profiles.map(p => (
@@ -502,6 +637,31 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
   )
 }
 
+function RecommendationCard({ mod, onSelect }: { mod: ModRow; onSelect: () => void }) {
+  return (
+    <button style={s.recommendCard} onClick={onSelect}>
+      <div style={s.recommendCardTop}>
+        <ModIcon src={mod.icon_url} alt={mod.name} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={s.modName}>{mod.name}</div>
+          <div style={s.modDesc}>{mod.description?.slice(0, 96) ?? '설명이 없습니다'}{mod.description && mod.description.length > 96 ? '...' : ''}</div>
+        </div>
+      </div>
+      <div style={s.reasonBox}>{mod.recommendation_reason}</div>
+      <div style={s.modMeta}>
+        <span style={s.verTag}>v{mod.version_number ?? '알 수 없음'}</span>
+        {mod.downloads > 0 && <span style={{fontSize: 11, color: '#71717a'}}>{mod.downloads.toLocaleString()} 다운로드</span>}
+      </div>
+    </button>
+  )
+}
+
+function ModIcon({ src, alt }: { src?: string | null; alt: string }) {
+  const [failed, setFailed] = useState(false)
+  if (!src || failed) return <div style={s.modIconFallback}><Icon.Package /></div>
+  return <img src={src} alt={alt} style={s.modIcon} onError={() => setFailed(true)} referrerPolicy="no-referrer" />
+}
+
 function ConflictPanel({ conflicts }: { conflicts: ConflictDetail[] }) {
   return (
     <div style={s.conflictPanel}>
@@ -529,28 +689,33 @@ function subjectName(subject: ConflictDetail['a']) {
 
 // --- Styles ---
 const s: Record<string, React.CSSProperties> = {
-  root: { display: 'flex', height: '100vh', background: '#0f0f11', color: '#e8e8ea', fontFamily: "'Apple SD Gothic Neo', sans-serif" },
-  sidebar: { width: 220, background: '#18181b', borderRight: '1px solid #2a2a2e', padding: '20px 10px', display: 'flex', flexDirection: 'column' },
-  logo: { display: 'flex', alignItems: 'center', gap: 10, padding: '0 10px 20px' },
-  logoMark: { width: 30, height: 30, background: '#4f46e5', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold' },
-  logoText: { fontWeight: 'bold', fontSize: 16 },
+  root: { display: 'flex', height: '100vh', background: 'radial-gradient(circle at top left, #1d2433 0, #0f0f11 38%, #0a0a0b 100%)', color: '#e8e8ea', fontFamily: "'Apple SD Gothic Neo', sans-serif" },
+  sidebar: { width: 230, background: 'rgba(16, 16, 19, 0.92)', borderRight: '1px solid #2a2a2e', padding: '20px 12px', display: 'flex', flexDirection: 'column', boxShadow: '12px 0 40px rgba(0,0,0,0.22)' },
+  logo: { display: 'flex', alignItems: 'center', gap: 11, padding: '0 10px 22px' },
+  logoMark: { width: 34, height: 34, background: 'linear-gradient(135deg, #4f46e5, #14b8a6)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 12px 28px rgba(20,184,166,0.20), inset 0 1px 0 rgba(255,255,255,0.20)' },
+  logoCube: { position: 'relative', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.92)', borderRadius: 3, transform: 'rotate(45deg)', boxSizing: 'border-box' },
+  logoCubeTop: { position: 'absolute', left: 2, top: 2, width: 5, height: 5, background: 'rgba(255,255,255,0.88)', borderRadius: 1 },
+  logoCubeSide: { position: 'absolute', right: 2, bottom: 2, width: 5, height: 5, background: 'rgba(15,23,42,0.72)', borderRadius: 1 },
+  logoText: { fontWeight: 'bold', fontSize: 17, letterSpacing: 0 },
   
-  profileBlock: { background: '#1f1f23', padding: 12, borderRadius: 10, marginBottom: 20 },
-  profileSelect: { width: '100%', background: '#18181b', color: '#fff', border: '1px solid #3f3f46', borderRadius: 6, padding: 5, marginBottom: 8, outline: 'none' },
+  profileBlock: { background: 'linear-gradient(180deg, #202127, #18181b)', padding: 12, borderRadius: 8, marginBottom: 20, border: '1px solid #2d2d34' },
+  profileSelect: { width: '100%', background: '#101014', color: '#fff', border: '1px solid #3f3f46', borderRadius: 6, padding: 7, marginBottom: 8, outline: 'none' },
   nav: { flex: 1, display: 'flex', flexDirection: 'column', gap: 4 },
-  navBtn: { background: 'transparent', border: 'none', color: '#71717a', padding: '10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 },
-  navActive: { background: '#27272a', color: '#fff' },
+  navBtn: { background: 'transparent', border: '1px solid transparent', color: '#8b8b95', padding: '10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 },
+  navActive: { background: '#27272a', color: '#fff', borderColor: '#353541' },
 
   main: { flex: 1, overflowY: 'auto' },
-  page: { maxWidth: 800, margin: '0 auto', padding: 40 },
+  page: { maxWidth: 900, margin: '0 auto', padding: 40 },
   pageHead: { marginBottom: 30 },
+  pageHeadRow: { marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
   pageTitle: { fontSize: 24, fontWeight: 'bold', margin: 0 },
   pageDesc: { color: '#71717a', marginTop: 5, fontSize: 14 },
 
   searchRow: { display: 'flex', gap: 10, marginBottom: 20 },
-  searchBox: { flex: 1, background: '#18181b', border: '1px solid #2a2a2e', borderRadius: 10, padding: '0 15px', display: 'flex', alignItems: 'center', gap: 10 },
+  searchBox: { flex: 1, background: 'rgba(24,24,27,0.86)', border: '1px solid #2f3037', borderRadius: 8, padding: '0 15px', display: 'flex', alignItems: 'center', gap: 10 },
   searchInput: { background: 'transparent', border: 'none', color: '#fff', width: '100%', padding: '12px 0', outline: 'none' },
-  primaryBtn: { background: '#4f46e5', color: '#fff', border: 'none', padding: '0 20px', borderRadius: 10, cursor: 'pointer', fontWeight: 'bold' },
+  primaryBtn: { background: '#6366f1', color: '#fff', border: 'none', padding: '0 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 10px 24px rgba(79,70,229,0.22)' },
+  primaryBtnTall: { background: '#6366f1', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 10px 24px rgba(79,70,229,0.22)', display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' },
   ghostBtn: { background: 'transparent', border: '1px solid #2a2a2e', color: '#a1a1aa', padding: '8px 15px', borderRadius: 8, cursor: 'pointer' },
   backBtn: { background: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: 0 },
 
@@ -567,8 +732,8 @@ const s: Record<string, React.CSSProperties> = {
   warnBadge: { fontSize: 11, color: '#fef3c7', background: '#78350f', padding: '2px 7px', borderRadius: 4 },
   
   depList: { display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 20 },
-  modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 15px', borderRadius: 10, background: '#18181b', border: '1px solid #2a2a2e' },
-  modChecked: { borderColor: '#4f46e5' },
+  modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 15px', borderRadius: 8, background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', boxShadow: '0 10px 26px rgba(0,0,0,0.16)' },
+  modChecked: { borderColor: '#6366f1', background: 'rgba(37,37,48,0.94)' },
   modLeft: { display: 'flex', alignItems: 'flex-start', gap: 12 },
   checkbox: { width: 18, height: 18, borderRadius: 5, border: '2px solid #3f3f46', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
   checkboxOn: { background: '#4f46e5', borderColor: '#4f46e5', color: '#fff' },
@@ -579,17 +744,17 @@ const s: Record<string, React.CSSProperties> = {
   optBadge: { fontSize: 11, background: '#1a2a1a', color: '#4ade80', padding: '3px 8px', borderRadius: 20 },
 
   installFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 0', borderTop: '1px solid #2a2a2e', marginTop: 10 },
-  installBtn: { background: '#4f46e5', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'bold' },
+  installBtn: { background: '#6366f1', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'bold' },
   successTxt: { color: '#4ade80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 },
   errorTxt: { color: '#f87171', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 },
   mutedTxt: { color: '#71717a', fontSize: 13 },
 
   listWrap: { display: 'flex', flexDirection: 'column', gap: 10 },
-  installedItem: { background: '#18181b', border: '1px solid #2a2a2e', borderRadius: 10, padding: 15, display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  installedItem: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
   delBtn: { background: '#2a1515', border: '1px solid #3f1515', color: '#f87171', borderRadius: 6, padding: '8px', cursor: 'pointer', display: 'flex' },
 
   profileGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 },
-  profileCard: { background: '#18181b', border: '1px solid #2a2a2e', borderRadius: 12, padding: 15, cursor: 'pointer', minHeight: 90 },
+  profileCard: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, cursor: 'pointer', minHeight: 90, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
   profileActive: { borderColor: '#4f46e5' },
   profileCardName: { fontWeight: 'bold', fontSize: 15 },
   iconBtn: { background: 'transparent', border: 'none', color: '#71717a', cursor: 'pointer' },
@@ -601,4 +766,14 @@ const s: Record<string, React.CSSProperties> = {
   select: { width: '100%', background: '#0f0f11', border: '1px solid #2a2a2e', color: '#fff', padding: '8px 10px', borderRadius: 6, outline: 'none' },
   empty: { textAlign: 'center', padding: '40px 0', color: '#71717a' },
   verTag: { fontSize: 11, background: '#27272a', padding: '2px 6px', borderRadius: 4, marginLeft: 5 },
+  recommendHero: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: 'linear-gradient(135deg, rgba(31,41,55,0.94), rgba(24,24,27,0.92))', border: '1px solid #30323b', borderRadius: 8, padding: 18, marginBottom: 18, boxShadow: '0 18px 40px rgba(0,0,0,0.20)' },
+  heroKicker: { color: '#a5b4fc', fontSize: 12, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  heroTitle: { color: '#f4f4f5', fontSize: 18, fontWeight: 'bold' },
+  heroSub: { color: '#8b8b95', fontSize: 13, marginTop: 4 },
+  recommendGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 },
+  recommendCard: { textAlign: 'left', color: '#e8e8ea', background: 'rgba(24,24,27,0.9)', border: '1px solid #2d2d34', borderRadius: 8, padding: 14, cursor: 'pointer', boxShadow: '0 14px 30px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column', gap: 10 },
+  recommendCardTop: { display: 'flex', gap: 12, alignItems: 'flex-start' },
+  modIcon: { width: 42, height: 42, borderRadius: 8, objectFit: 'cover', flexShrink: 0, background: '#27272a', border: '1px solid #34343b' },
+  modIconFallback: { width: 42, height: 42, borderRadius: 8, background: 'linear-gradient(135deg, #27272a, #1f2937)', color: '#a1a1aa', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '1px solid #34343b' },
+  reasonBox: { color: '#c7d2fe', background: 'rgba(79,70,229,0.12)', border: '1px solid rgba(129,140,248,0.22)', borderRadius: 6, padding: '8px 9px', fontSize: 12, lineHeight: 1.4 },
 }

@@ -52,6 +52,14 @@ export default function App() {
   const [conflictDetails, setConflictDetails] = useState<ConflictDetail[]>([])
   const [scannedJars, setScannedJars] = useState<ScannedJarMod[]>([])
 
+  // --- 추천 페이지 인라인 설치 패널 ---
+  const [recPanelMod, setRecPanelMod]     = useState<ModRow | null>(null)
+  const [recDepResults, setRecDepResults] = useState<ModRow[]>([])
+  const [recSelected, setRecSelected]     = useState<Set<string>>(new Set())
+  const [recAnalyzing, setRecAnalyzing]   = useState(false)
+  const [recInstSt, setRecInstSt]         = useState<'idle'|'installing'|'done'|'error'>('idle')
+  const [recInstMsg, setRecInstMsg]       = useState('')
+
   // --- Install States ---
   const [installStatus, setInstSt] = useState<'idle'|'installing'|'done'|'error'>('idle')
   const [installMsg, setInstMsg] = useState('')
@@ -345,6 +353,102 @@ export default function App() {
     }
   }
 
+  // --- 추천 카드 클릭: 인라인 패널 열기 ---
+  const handleRecSelect = async (mod: ModRow) => {
+    if (!activeProfile) { alert('프로필을 먼저 선택해 주세요!'); return }
+
+    // 같은 카드를 다시 클릭하면 패널 닫기
+    if (recPanelMod?.modrinth_id === mod.modrinth_id) {
+      setRecPanelMod(null)
+      setRecDepResults([])
+      setRecInstSt('idle')
+      return
+    }
+
+    setRecPanelMod(mod)
+    setRecAnalyzing(true)
+    setRecDepResults([])
+    setRecSelected(new Set())
+    setRecInstSt('idle')
+
+    try {
+      const installedIds = installedMods.map(m => m.modrinth_id)
+      const resolved = await api.resolveDeps(mod.modrinth_id, {
+        gameVersion: activeProfile.game_version,
+        loader: activeProfile.loader,
+        selected: installedIds,
+      })
+
+      if (resolved.error && !resolved.root) {
+        setRecInstSt('error')
+        setRecInstMsg(resolved.error)
+        return
+      }
+
+      let flat: ModRow[] = []
+      if (resolved.root) {
+        const depsOnly = resolved.installOrder.filter(
+          (m: ModRow) => m.modrinth_id !== resolved.root!.modrinth_id
+        )
+        flat = [resolved.root, ...depsOnly]
+      } else {
+        flat = [{ ...mod, dep_type: 'required' as const, depth: 0, children: [] }]
+      }
+
+      setRecDepResults(flat)
+      setRecSelected(new Set(
+        flat
+          .filter(m => m.dep_type === 'required' || m.modrinth_id === resolved.root?.modrinth_id)
+          .map(m => m.modrinth_id)
+      ))
+    } catch (e: any) {
+      setRecInstSt('error')
+      setRecInstMsg(e.message)
+    } finally {
+      setRecAnalyzing(false)
+    }
+  }
+
+  // --- 추천 패널 설치 ---
+  const handleRecInstall = async () => {
+    if (!activeProfile) return
+    const toInstall = recDepResults.filter(m => recSelected.has(m.modrinth_id))
+    setRecInstSt('installing')
+    try {
+      const res = await api.downloadMods(toInstall, activeProfile.install_path || '.minecraft/mods')
+      if (res.success) {
+        setRecInstSt('done')
+        setRecInstMsg(`${res.files.length}개 모드 설치 완료`)
+        try {
+          const modsToSave = toInstall
+            .filter(m => m.id !== undefined)
+            .map(m => ({ id: m.id!, ver_id: m.ver_id }))
+          if (modsToSave.length > 0) {
+            await api.saveProfileMods(activeProfile.id, modsToSave)
+            await loadInstalledMods(activeProfile.id)
+          }
+        } catch (dbErr) {
+          console.error('DB 저장 실패:', dbErr)
+        }
+        // 설치된 모드는 추천 목록에서 제거
+        setRecommendedMods(prev => prev.filter(m => m.modrinth_id !== recPanelMod?.modrinth_id))
+      } else {
+        setRecInstSt('error')
+        setRecInstMsg(`${res.failed.length}개 실패: ${res.failed[0]?.reason}`)
+      }
+    } catch (e: any) {
+      setRecInstSt('error')
+      setRecInstMsg(e.message)
+    }
+  }
+
+  const toggleRecMod = (id: string, required: boolean) => {
+    if (required) return
+    const next = new Set(recSelected)
+    next.has(id) ? next.delete(id) : next.add(id)
+    setRecSelected(next)
+  }
+
   // --- Render ---
   return (
     <div style={s.root}>
@@ -509,10 +613,104 @@ export default function App() {
                 <p style={{marginTop: 10}}>추천하려면 먼저 DB 동기화나 모드 설치가 필요합니다.</p>
               </div>
             ) : (
-              <div style={s.recommendGrid}>
-                {recommendedMods.map(mod => (
-                  <RecommendationCard key={mod.modrinth_id} mod={mod} onSelect={() => handleSelectMod(mod)} />
-                ))}
+              <div style={s.recommendList}>
+                {recommendedMods.map(mod => {
+                  const isOpen = recPanelMod?.modrinth_id === mod.modrinth_id
+                  return (
+                    <div key={mod.modrinth_id}>
+                      {/* 추천 카드 */}
+                      <div
+                        style={{ ...s.recommendCard, ...(isOpen ? s.recommendCardOpen : {}) }}
+                        onClick={() => handleRecSelect(mod)}
+                      >
+                        <div style={s.recommendCardTop}>
+                          <ModIcon src={mod.icon_url} alt={mod.name} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={s.modName}>{mod.name}</div>
+                            <div style={s.modDesc}>
+                              {mod.description?.slice(0, 96) ?? '설명이 없습니다'}
+                              {mod.description && mod.description.length > 96 ? '...' : ''}
+                            </div>
+                          </div>
+                          <span style={isOpen ? s.recToggleOpen : s.recToggle}>
+                            {isOpen ? '닫기' : '추가하기'}
+                          </span>
+                        </div>
+                        <div style={s.reasonBox}>{mod.recommendation_reason}</div>
+                        <div style={s.modMeta}>
+                          <span style={s.verTag}>v{mod.version_number ?? '알 수 없음'}</span>
+                          {mod.downloads > 0 && (
+                            <span style={{fontSize: 11, color: '#71717a'}}>{mod.downloads.toLocaleString()} 다운로드</span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 인라인 설치 패널 */}
+                      {isOpen && (
+                        <div style={s.recPanel}>
+                          {recAnalyzing ? (
+                            <p style={s.mutedTxt}>의존성 모드 분석 중...</p>
+                          ) : recDepResults.length > 0 ? (
+                            <>
+                              {/* 메인 모드 */}
+                              <p style={s.recPanelLabel}>선택한 모드</p>
+                              <div style={{ ...s.depList, marginBottom: 12 }}>
+                                <ModCard mod={recDepResults[0]} required checked onToggle={() => {}} />
+                              </div>
+
+                              {/* 의존성 */}
+                              {recDepResults.length > 1 && (
+                                <>
+                                  <p style={s.recPanelLabel}>함께 설치되는 의존성 ({recDepResults.length - 1}개)</p>
+                                  <div style={s.depList}>
+                                    {recDepResults.slice(1).map(dm => {
+                                      const isReq = dm.dep_type === 'required' || !dm.dep_type
+                                      return (
+                                        <ModCard
+                                          key={dm.modrinth_id} mod={dm}
+                                          required={isReq}
+                                          checked={recSelected.has(dm.modrinth_id)}
+                                          onToggle={() => toggleRecMod(dm.modrinth_id, isReq)}
+                                        />
+                                      )
+                                    })}
+                                  </div>
+                                </>
+                              )}
+
+                              {/* 설치 버튼 */}
+                              <div style={s.recPanelFooter}>
+                                <div>
+                                  {recInstSt === 'done'       && <span style={s.successTxt}><Icon.Check /> {recInstMsg}</span>}
+                                  {recInstSt === 'error'      && <span style={s.errorTxt}><Icon.Alert /> {recInstMsg}</span>}
+                                  {recInstSt === 'installing' && <span style={s.mutedTxt}>설치 중...</span>}
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                  <span style={s.mutedTxt}>{recSelected.size}개 선택됨</span>
+                                  <button
+                                    style={{
+                                      ...s.installBtn,
+                                      opacity: recInstSt === 'installing' || recSelected.size === 0 || recInstSt === 'done' ? 0.5 : 1
+                                    }}
+                                    onClick={e => { e.stopPropagation(); handleRecInstall() }}
+                                    disabled={recInstSt === 'installing' || recSelected.size === 0 || recInstSt === 'done'}
+                                  >
+                                    <Icon.Download />
+                                    {recInstSt === 'installing' ? '설치 중...'
+                                      : recInstSt === 'done'    ? '설치 완료'
+                                      : `${activeProfile?.name}에 설치`}
+                                  </button>
+                                </div>
+                              </div>
+                            </>
+                          ) : recInstSt === 'error' ? (
+                            <p style={s.errorTxt}><Icon.Alert /> {recInstMsg}</p>
+                          ) : null}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -770,8 +968,14 @@ const s: Record<string, React.CSSProperties> = {
   heroKicker: { color: '#a5b4fc', fontSize: 12, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
   heroTitle: { color: '#f4f4f5', fontSize: 18, fontWeight: 'bold' },
   heroSub: { color: '#8b8b95', fontSize: 13, marginTop: 4 },
-  recommendGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12 },
+  recommendList: { display: 'flex', flexDirection: 'column', gap: 8 },
   recommendCard: { textAlign: 'left', color: '#e8e8ea', background: 'rgba(24,24,27,0.9)', border: '1px solid #2d2d34', borderRadius: 8, padding: 14, cursor: 'pointer', boxShadow: '0 14px 30px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column', gap: 10 },
+  recommendCardOpen: { borderColor: '#6366f1', background: 'rgba(37,37,55,0.95)' },
+  recToggle: { fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#1a2a1a', color: '#4ade80', whiteSpace: 'nowrap', flexShrink: 0 },
+  recToggleOpen: { fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#27272a', color: '#a1a1aa', whiteSpace: 'nowrap', flexShrink: 0 },
+  recPanel: { background: 'rgba(15,15,20,0.96)', border: '1px solid #3a3a4a', borderTop: 'none', borderRadius: '0 0 8px 8px', padding: '16px 16px 12px', marginTop: -4 },
+  recPanelLabel: { fontSize: 11, fontWeight: 'bold', color: '#52525b', letterSpacing: 0.8, textTransform: 'uppercase', margin: '0 0 8px' },
+  recPanelFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: '1px solid #2a2a2e', marginTop: 8 },
   recommendCardTop: { display: 'flex', gap: 12, alignItems: 'flex-start' },
   modIcon: { width: 42, height: 42, borderRadius: 8, objectFit: 'cover', flexShrink: 0, background: '#27272a', border: '1px solid #34343b' },
   modIconFallback: { width: 42, height: 42, borderRadius: 8, background: 'linear-gradient(135deg, #27272a, #1f2937)', color: '#a1a1aa', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '1px solid #34343b' },

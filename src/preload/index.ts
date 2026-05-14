@@ -13,6 +13,12 @@ const api: ElectronAPI = {
   getDependencies: (modrinthId, opts = {}) =>
     ipcRenderer.invoke('get-dependencies', modrinthId, opts),
 
+  getModDetail: (modrinthId, opts = {}) =>
+    ipcRenderer.invoke('get-mod-detail', modrinthId, opts),
+
+  checkProfileUpdates: (profileId, opts = {}) =>
+    ipcRenderer.invoke('check-profile-updates', profileId, opts),
+
   resolveDeps: (modrinthId, opts = {}) =>
     ipcRenderer.invoke('resolve-deps', modrinthId, opts),
 
@@ -47,6 +53,9 @@ const api: ElectronAPI = {
   openFolder: (path) =>
     ipcRenderer.invoke('open-folder', path),
 
+  selectInstallPath: () =>
+    ipcRenderer.invoke('select-install-path'),
+
   // 이벤트 리스너
   onSyncProgress: (cb) => {
     const handler = (_: Electron.IpcRendererEvent, data: any) => cb(data)
@@ -68,6 +77,15 @@ const api: ElectronAPI = {
     
   deleteProfile: (id) => 
     ipcRenderer.invoke('delete-profile', id),
+
+  updateProfilePath: (profileId, installPath) =>
+    ipcRenderer.invoke('update-profile-path', profileId, installPath),
+
+  backupProfileMods: (profileId) =>
+    ipcRenderer.invoke('backup-profile-mods', profileId),
+
+  restoreProfileBackup: (profileId, backupPath) =>
+    ipcRenderer.invoke('restore-profile-backup', profileId, backupPath),
     
   getInstalledMods: (profileId) => 
     ipcRenderer.invoke('get-installed-mods', profileId),
@@ -78,8 +96,8 @@ const api: ElectronAPI = {
   importProfilePack: () =>
     ipcRenderer.invoke('import-profile-pack'),
     
-  uninstallMod: (profileId, modId) => 
-    ipcRenderer.invoke('uninstall-mod', profileId, modId),
+  uninstallMod: (profileId, modId, opts = {}) => 
+    ipcRenderer.invoke('uninstall-mod', profileId, modId, opts),
 
   saveProfileMods: (profileId, modIds) => 
     ipcRenderer.invoke('save-profile-mods', profileId, modIds),

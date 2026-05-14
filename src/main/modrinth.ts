@@ -91,7 +91,12 @@ function saveVersions(modId: number, versions: any[]): void {
       version_number=EXCLUDED.version_number,
       game_versions=EXCLUDED.game_versions,
       loaders=EXCLUDED.loaders,
+      file_url=EXCLUDED.file_url,
+      file_name=EXCLUDED.file_name,
+      file_size=EXCLUDED.file_size,
+      file_hash_sha1=EXCLUDED.file_hash_sha1,
       is_featured=EXCLUDED.is_featured,
+      published_at=EXCLUDED.published_at,
       synced_at=CURRENT_TIMESTAMP
     RETURNING id
   `)
@@ -298,6 +303,122 @@ export async function getDependencies(
   depSql += depConditions + ` GROUP BY d.id ORDER BY d.dep_type ASC`
 
   return db.prepare(depSql).all(...depParams) as ModRow[]
+}
+
+export async function getModDetail(
+  modrinthId: string,
+  opts: { gameVersion?: string; loader?: string } = {}
+) {
+  await fetchAndCache(modrinthId).catch(() => {})
+
+  const mod = db.prepare(`
+    SELECT
+      m.id, m.modrinth_id, m.slug, m.name, m.description, m.icon_url,
+      m.categories, m.loaders, m.downloads, m.follows, m.license, m.updated_at,
+      mv.id AS ver_id, mv.modrinth_ver_id, mv.version_number, mv.version_type,
+      mv.game_versions, mv.loaders AS version_loaders, mv.file_url, mv.file_name,
+      mv.file_size, mv.file_hash_sha1, mv.published_at
+    FROM mods m
+    LEFT JOIN mod_versions mv ON mv.mod_id = m.id
+    WHERE m.modrinth_id = ?
+      AND (? IS NULL OR mv.game_versions LIKE ?)
+      AND (? IS NULL OR LOWER(mv.loaders) LIKE ?)
+    ORDER BY mv.published_at DESC
+    LIMIT 1
+  `).get(
+    modrinthId,
+    opts.gameVersion ?? null,
+    opts.gameVersion ? `%"${opts.gameVersion}"%` : null,
+    opts.loader ?? null,
+    opts.loader ? `%"${opts.loader.toLowerCase()}"%` : null,
+  ) as any
+
+  if (!mod) return null
+
+  const dependencies = await getDependencies(modrinthId, opts)
+
+  return {
+    ...mod,
+    categories: parseJsonArray(mod.categories),
+    loaders: parseJsonArray(mod.loaders),
+    game_versions: parseJsonArray(mod.game_versions),
+    version_loaders: parseJsonArray(mod.version_loaders),
+    dependencies,
+  }
+}
+
+export async function checkProfileUpdates(
+  profileId: string,
+  opts: { gameVersion?: string; loader?: string } = {}
+) {
+  const installed = db.prepare(`
+    SELECT
+      m.id, m.modrinth_id, m.slug, m.name, m.icon_url,
+      mv.id AS installed_ver_db_id,
+      mv.modrinth_ver_id AS installed_version_id,
+      mv.version_number AS installed_version_number
+    FROM profile_mods pm
+    JOIN mods m ON pm.mod_id = m.id
+    LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
+    WHERE pm.profile_id = ?
+    ORDER BY m.name ASC
+  `).all(profileId) as any[]
+
+  const results: any[] = []
+
+  for (const mod of installed) {
+    await fetchAndCache(mod.modrinth_id).catch(() => {})
+
+    const latest = db.prepare(`
+      SELECT
+        id AS latest_ver_db_id,
+        modrinth_ver_id AS latest_version_id,
+        version_number AS latest_version_number,
+        file_url, file_name, file_size, file_hash_sha1,
+        published_at
+      FROM mod_versions
+      WHERE mod_id = ?
+        AND (? IS NULL OR game_versions LIKE ?)
+        AND (? IS NULL OR LOWER(loaders) LIKE ?)
+      ORDER BY published_at DESC
+      LIMIT 1
+    `).get(
+      mod.id,
+      opts.gameVersion ?? null,
+      opts.gameVersion ? `%"${opts.gameVersion}"%` : null,
+      opts.loader ?? null,
+      opts.loader ? `%"${opts.loader.toLowerCase()}"%` : null,
+    ) as any
+
+    results.push({
+      modrinth_id: mod.modrinth_id,
+      slug: mod.slug,
+      name: mod.name,
+      icon_url: mod.icon_url,
+      installed_version_id: mod.installed_version_id,
+      installed_version_number: mod.installed_version_number,
+      latest_version_id: latest?.latest_version_id ?? null,
+      latest_version_number: latest?.latest_version_number ?? null,
+      latest_file_url: latest?.file_url ?? null,
+      latest_file_name: latest?.file_name ?? null,
+      latest_ver_db_id: latest?.latest_ver_db_id ?? null,
+      update_available: Boolean(latest?.latest_version_id && latest.latest_version_id !== mod.installed_version_id),
+      status: latest ? (latest.latest_version_id !== mod.installed_version_id ? 'update_available' : 'up_to_date') : 'unknown',
+    })
+  }
+
+  return { ok: true, updates: results }
+}
+
+function parseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String)
+  if (typeof value !== 'string') return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.map(String) : []
+  } catch {
+    return []
+  }
 }
 
 // 동기화 상태

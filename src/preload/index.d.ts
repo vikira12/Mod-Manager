@@ -32,10 +32,52 @@ export interface DependencyResult {
   error?: string
 }
 
+export interface ModDetail extends ModRow {
+  follows?: number
+  license?: string | null
+  updated_at?: string | null
+  version_type?: string
+  game_versions?: string[]
+  version_loaders?: string[]
+  file_size?: number | null
+  file_hash_sha1?: string | null
+  published_at?: string | null
+  dependencies?: ModRow[]
+}
+
+export interface ModDetailResult {
+  ok: boolean
+  detail: ModDetail | null
+  error?: string
+}
+
+export interface ModUpdateInfo {
+  modrinth_id: string
+  slug: string
+  name: string
+  icon_url: string | null
+  installed_version_id: string | null
+  installed_version_number: string | null
+  latest_version_id: string | null
+  latest_version_number: string | null
+  latest_file_url: string | null
+  latest_file_name: string | null
+  latest_ver_db_id: number | null
+  update_available: boolean
+  status: 'update_available' | 'up_to_date' | 'unknown'
+}
+
+export interface UpdateCheckResult {
+  ok: boolean
+  updates: ModUpdateInfo[]
+  error?: string
+}
+
 export interface InstallResult {
   success: boolean
   files: string[]
   failed: { name: string; reason: string }[]
+  backupPath?: string | null
 }
 
 export interface SyncResult {
@@ -162,6 +204,7 @@ export interface ImportPackResult {
   imported?: number
   downloaded?: number
   localJarCount?: number
+  backupPath?: string | null
   failed?: { name: string; reason: string }[]
   error?: string
 }
@@ -170,6 +213,8 @@ export interface ElectronAPI {
   searchMod:          (query: string, opts?: { loader?: string; gameVersion?: string }) => Promise<SearchResult>
   getRecommendations: (data: { profileId: string; loader?: string; gameVersion?: string; limit?: number }) => Promise<RecommendationResult>
   getDependencies:    (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<DependencyResult>
+  getModDetail:       (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<ModDetailResult>
+  checkProfileUpdates: (profileId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<UpdateCheckResult>
 
   // 의존성 해결 엔진
   resolveDeps:        (modrinthId: string, opts?: { gameVersion?: string; loader?: string; selected?: string[] }) => Promise<ResolveResult>
@@ -192,6 +237,7 @@ export interface ElectronAPI {
   syncModrinth:       (opts?: { limit?: number }) => Promise<SyncResult>
   syncStatus:         () => Promise<SyncStatus>
   openFolder:         (path: string) => Promise<void>
+  selectInstallPath:  () => Promise<{ ok: boolean; canceled?: boolean; path?: string }>
   
   onSyncProgress:     (cb: (data: SyncProgress) => void)    => () => void
   onInstallProgress:  (cb: (data: InstallProgress) => void) => () => void
@@ -199,10 +245,13 @@ export interface ElectronAPI {
   getProfiles: () => Promise<any[]>
   createProfile: (data: { name: string; gameVersion: string; loader: string }) => Promise<{ ok: boolean; id?: number }>
   deleteProfile: (id: string) => Promise<{ ok: boolean }>
+  updateProfilePath: (profileId: string, installPath: string | null) => Promise<{ ok: boolean; error?: string }>
+  backupProfileMods: (profileId: string) => Promise<{ ok: boolean; backupPath?: string; error?: string }>
+  restoreProfileBackup: (profileId: string, backupPath: string) => Promise<{ ok: boolean; restoredPath?: string; currentBackup?: string | null; error?: string }>
   getInstalledMods: (profileId: string) => Promise<any[]>
   exportProfilePack: (profileId: string) => Promise<ExportPackResult>
   importProfilePack: () => Promise<ImportPackResult>
-  uninstallMod: (profileId: string, modId: string) => Promise<{ ok: boolean }>
+  uninstallMod: (profileId: string, modId: string, opts?: { deleteFile?: boolean }) => Promise<{ ok: boolean; deletedFile?: string | null; warning?: string }>
   saveProfileMods: (profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => Promise<{ ok: boolean }>
 }
 

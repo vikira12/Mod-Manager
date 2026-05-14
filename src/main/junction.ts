@@ -5,7 +5,7 @@ import axios from 'axios'
 import { db } from './db'
 import {
   searchLocal, searchRemote, getDependencies,
-  syncModrinth, getSyncStatus,
+  syncModrinth, getSyncStatus, getModDetail, checkProfileUpdates,
 } from './modrinth'
 import { resolveDependencies, validateSelection } from './resolver'
 import { getDefaultModsPath, scanModJars } from './jarScanner'
@@ -88,6 +88,24 @@ function upsertImportedMod(mod: any, profile: any): { modId: number; versionId: 
   ) as { id: number }
 
   return { modId: modRow.id, versionId: versionRow.id }
+}
+
+function getProfileModsPath(profileId: string): string {
+  const profile = db.prepare('SELECT install_path FROM profiles WHERE id = ?').get(profileId) as { install_path?: string | null } | undefined
+  return path.resolve(profile?.install_path || getDefaultModsPath())
+}
+
+function createModsBackup(modsDir: string, label = 'manual'): string | null {
+  const resolvedModsDir = path.resolve(modsDir)
+  if (!fs.existsSync(resolvedModsDir)) return null
+
+  const backupRoot = path.join(app.getPath('userData'), 'backups')
+  fs.mkdirSync(backupRoot, { recursive: true })
+
+  const safeLabel = label.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'backup'
+  const backupPath = path.join(backupRoot, `${safeLabel}-${new Date().toISOString().replace(/[:.]/g, '-')}`)
+  fs.cpSync(resolvedModsDir, backupPath, { recursive: true })
+  return backupPath
 }
 
 export function registerHandlers(win: BrowserWindow): void {
@@ -275,6 +293,23 @@ export function registerHandlers(win: BrowserWindow): void {
     }
   })
 
+  ipcMain.handle('get-mod-detail', async (_e, modrinthId: string, opts = {}) => {
+    try {
+      const detail = await getModDetail(modrinthId, opts)
+      return { ok: Boolean(detail), detail, error: detail ? undefined : '모드 상세 정보를 찾을 수 없습니다.' }
+    } catch (err: any) {
+      return { ok: false, detail: null, error: err.message }
+    }
+  })
+
+  ipcMain.handle('check-profile-updates', async (_e, profileId: string, opts = {}) => {
+    try {
+      return await checkProfileUpdates(profileId, opts)
+    } catch (err: any) {
+      return { ok: false, updates: [], error: err.message }
+    }
+  })
+
   // 모드 설치
   ipcMain.handle('download-mods', async (_e, mods: any[], installPath?: string) => {
     const targetDir = installPath ?? path.join(
@@ -282,6 +317,7 @@ export function registerHandlers(win: BrowserWindow): void {
       '.minecraft', 'mods'
     )
     fs.mkdirSync(targetDir, { recursive: true })
+    const backupPath = createModsBackup(targetDir, 'before-install')
 
     const success: string[] = []
     const failed: { name: string; reason: string }[] = []
@@ -313,7 +349,7 @@ export function registerHandlers(win: BrowserWindow): void {
       }
     }
 
-    return { success: failed.length === 0, files: success, failed }
+    return { success: failed.length === 0, files: success, failed, backupPath }
   })
 
   // 폴더 연결
@@ -381,6 +417,15 @@ export function registerHandlers(win: BrowserWindow): void {
   // 유틸
   ipcMain.handle('open-folder', async (_e, folderPath: string) => shell.openPath(folderPath))
 
+  ipcMain.handle('select-install-path', async () => {
+    const result = await dialog.showOpenDialog(win, {
+      title: 'mods 폴더 선택',
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (result.canceled || !result.filePaths[0]) return { ok: false, canceled: true }
+    return { ok: true, canceled: false, path: result.filePaths[0] }
+  })
+
   // 모든 프로필 가져오기
   ipcMain.handle('get-profiles', async () => {
     return db.prepare('SELECT * FROM profiles ORDER BY created_at DESC').all();
@@ -400,15 +445,61 @@ export function registerHandlers(win: BrowserWindow): void {
     return { ok: true };
   });
 
+  ipcMain.handle('update-profile-path', async (_e, profileId: string, installPath: string | null) => {
+    db.prepare('UPDATE profiles SET install_path = ? WHERE id = ?').run(installPath, profileId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('backup-profile-mods', async (_e, profileId: string) => {
+    try {
+      const modsDir = getProfileModsPath(profileId)
+      const backupPath = createModsBackup(modsDir, `profile-${profileId}`)
+      if (!backupPath) return { ok: false, error: '백업할 mods 폴더가 없습니다.' }
+      return { ok: true, backupPath }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('restore-profile-backup', async (_e, profileId: string, backupPath: string) => {
+    try {
+      const resolvedBackup = path.resolve(backupPath)
+      const backupRoot = path.resolve(app.getPath('userData'), 'backups')
+      if (!resolvedBackup.startsWith(backupRoot + path.sep)) {
+        return { ok: false, error: 'ModForge 백업 폴더 안의 백업만 복구할 수 있습니다.' }
+      }
+      if (!fs.existsSync(resolvedBackup)) return { ok: false, error: '백업 폴더를 찾을 수 없습니다.' }
+
+      const modsDir = getProfileModsPath(profileId)
+      fs.mkdirSync(path.dirname(modsDir), { recursive: true })
+      const currentBackup = fs.existsSync(modsDir) ? createModsBackup(modsDir, `before-restore-${profileId}`) : null
+      if (fs.existsSync(modsDir)) {
+        const movedAside = `${modsDir}_before_restore_${Date.now()}`
+        fs.renameSync(modsDir, movedAside)
+      }
+      fs.cpSync(resolvedBackup, modsDir, { recursive: true })
+      return { ok: true, restoredPath: modsDir, currentBackup }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
   // 특정 프로필에 설치된 모드 목록 가져오기
   ipcMain.handle('get-installed-mods', async (_e, profileId: string) => {
-    return db.prepare(`
-      SELECT m.*, mv.version_number, pm.installed_at 
+    const rows = db.prepare(`
+      SELECT m.*, mv.version_number, mv.file_name, p.install_path, pm.installed_at 
       FROM profile_mods pm
       JOIN mods m ON pm.mod_id = m.id
       LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
+      LEFT JOIN profiles p ON p.id = pm.profile_id
       WHERE pm.profile_id = ?
-    `).all(profileId);
+    `).all(profileId) as any[];
+
+    return rows.map(row => ({
+      ...row,
+      categories: parseJsonArray(row.categories),
+      loaders: parseJsonArray(row.loaders),
+    }));
   });
 
   ipcMain.handle('export-profile-pack', async (_e, profileId: string) => {
@@ -538,6 +629,7 @@ export function registerHandlers(win: BrowserWindow): void {
       const profileId = Number(profileInfo.lastInsertRowid)
       const targetDir = getDefaultModsPath()
       fs.mkdirSync(targetDir, { recursive: true })
+      const backupPath = createModsBackup(targetDir, 'before-import')
 
       const imported: string[] = []
       const downloaded: string[] = []
@@ -587,6 +679,7 @@ export function registerHandlers(win: BrowserWindow): void {
         imported: imported.length,
         downloaded: downloaded.length,
         localJarCount: Array.isArray(manifest.local_jars) ? manifest.local_jars.length : 0,
+        backupPath,
         failed,
       }
     } catch (err: any) {
@@ -594,11 +687,41 @@ export function registerHandlers(win: BrowserWindow): void {
     }
   });
 
-  // 모드 삭제 (프로필에서 제거)
-  ipcMain.handle('uninstall-mod', async (_e, profileId: string, modId: string) => {
+  // 모드 삭제 (프로필에서 제거, 선택 시 파일까지 삭제)
+  ipcMain.handle('uninstall-mod', async (_e, profileId: string, modId: string, opts: { deleteFile?: boolean } = {}) => {
+    const row = db.prepare(`
+      SELECT mv.file_name, p.install_path
+      FROM profile_mods pm
+      LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
+      LEFT JOIN profiles p ON p.id = pm.profile_id
+      WHERE pm.profile_id = ? AND pm.mod_id = ?
+    `).get(profileId, modId) as { file_name?: string | null; install_path?: string | null } | undefined
+
+    let deletedFile: string | null = null
+    let fileWarning: string | undefined
+
+    if (opts.deleteFile) {
+      if (!row?.file_name) {
+        fileWarning = '삭제할 jar 파일명을 찾을 수 없습니다.'
+      } else {
+        const modsDir = path.resolve(row.install_path || getDefaultModsPath())
+        const filePath = path.resolve(modsDir, row.file_name)
+
+        if (!filePath.startsWith(modsDir + path.sep)) {
+          fileWarning = '안전하지 않은 파일 경로라 삭제하지 않았습니다.'
+        } else if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath)
+          deletedFile = filePath
+        } else {
+          fileWarning = '파일이 이미 없거나 다른 위치에 있습니다.'
+        }
+      }
+    }
+
     db.prepare('DELETE FROM profile_mods WHERE profile_id = ? AND mod_id = ?')
       .run(profileId, modId);
-    return { ok: true };
+
+    return { ok: true, deletedFile, warning: fileWarning };
   });
 
   ipcMain.handle('save-profile-mods', async (_e, profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => {

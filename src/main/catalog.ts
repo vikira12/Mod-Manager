@@ -1,31 +1,21 @@
-import axios from 'axios'
 import { db } from './db'
+import { defaultProvider, getProvider } from './providers'
+import type { ModProvider, ProviderProject, ProviderVersion } from './providers'
 
-// API 클라이언트
-const api = axios.create({
-  baseURL: 'https://api.modrinth.com/v2',
-  headers: { 'User-Agent': 'ModForge/0.1.0 (github.com/modforge)' },
-  timeout: 15000,
-})
+// 로컬 카탈로그(캐시) 계층: 프로바이더에서 받아온 데이터를 SQLite에 저장하고 조회한다.
+// 네트워크 접근은 전부 providers/ 밑의 구현체가 담당한다.
+//
+// 참고: mods.modrinth_id / mod_versions.modrinth_ver_id 컬럼은 "프로바이더의 프로젝트/버전 ID"라는
+// 일반 의미로 사용한다. 멀티 프로바이더 도입 시 provider 컬럼 추가 마이그레이션이 필요하다.
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+export const DEFAULT_GAME_SLUG = 'minecraft'
 
-async function withRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn()
-    } catch (err: any) {
-      const status = err.response?.status
-      if ((status === 429 || status >= 500) && i < retries - 1) {
-        const wait = status === 429
-          ? parseInt(err.response.headers['x-ratelimit-reset'] ?? '60') * 1000
-          : 1000 * (i + 1)
-        console.warn(`[Modrinth] 재시도 ${i + 1}/${retries} (${wait}ms 대기)`)
-        await sleep(wait)
-      } else throw err
-    }
-  }
-  throw new Error('최대 재시도 초과')
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+export function getGameId(slug: string = DEFAULT_GAME_SLUG): number {
+  const row = db.prepare('SELECT id FROM games WHERE slug = ?').get(slug) as { id: number } | undefined
+  if (!row) throw new Error(`등록되지 않은 게임입니다: ${slug}`)
+  return row.id
 }
 
 export interface ModRow {
@@ -48,11 +38,12 @@ export interface ModRow {
 
 export interface SyncOptions {
   limit?: number
+  provider?: string
   onProgress?: (data: { total: number; synced: number; name: string }) => void
 }
 
 // 모드 저장
-function saveMod(gameId: number, project: any): number {
+function saveMod(gameId: number, project: ProviderProject): number {
   const stmt = db.prepare(`
     INSERT INTO mods
       (game_id, modrinth_id, slug, name, description, icon_url,
@@ -68,19 +59,19 @@ function saveMod(gameId: number, project: any): number {
 
   // 배열은 JSON 문자열로 변환해서 저장
   const res = stmt.get(
-    gameId, project.id, project.slug, project.title,
-    project.description, project.icon_url ?? null,
-    JSON.stringify(project.categories ?? []), 
-    JSON.stringify(project.loaders ?? []),
-    project.downloads ?? 0, project.followers ?? 0,
-    project.license?.id ?? null,
-    project.updated ? new Date(project.updated).toISOString() : null
+    gameId, project.id, project.slug, project.name,
+    project.description, project.icon_url,
+    JSON.stringify(project.categories),
+    JSON.stringify(project.loaders),
+    project.downloads, project.follows,
+    project.license,
+    project.updated_at,
   ) as { id: number }
-  
+
   return res.id
 }
 
-function saveVersions(modId: number, versions: any[]): void {
+function saveVersions(modId: number, versions: ProviderVersion[]): void {
   const vStmt = db.prepare(`
     INSERT INTO mod_versions
       (mod_id, modrinth_ver_id, version_number, version_type,
@@ -102,61 +93,66 @@ function saveVersions(modId: number, versions: any[]): void {
   `)
 
   const depStmt = db.prepare(`
-    INSERT INTO mod_dependencies (mod_version_id, depends_on_mod_id, modrinth_dep_id, dep_type)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT (mod_version_id, modrinth_dep_id, dep_type) DO NOTHING
+    INSERT INTO mod_dependencies (mod_version_id, depends_on_mod_id, modrinth_dep_id, modrinth_dep_version_id, dep_type)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (mod_version_id, modrinth_dep_id, dep_type) DO UPDATE SET
+      depends_on_mod_id = excluded.depends_on_mod_id,
+      modrinth_dep_version_id = excluded.modrinth_dep_version_id
   `)
 
   for (const ver of versions) {
-    const primary = ver.files?.find((f: any) => f.primary) ?? ver.files?.[0]
-
     const vRes = vStmt.get(
-      modId, ver.id, ver.version_number, ver.version_type ?? 'release',
-      JSON.stringify(ver.game_versions ?? []), 
-      JSON.stringify(ver.loaders ?? []),
-      primary?.url ?? null, primary?.filename ?? null,
-      primary?.size ?? null, primary?.hashes?.sha1 ?? null,
-      ver.featured ? 1 : 0, // SQLite는 boolean 대신 1/0
-      ver.date_published ? new Date(ver.date_published).toISOString() : null
+      modId, ver.id, ver.version_number, ver.version_type,
+      JSON.stringify(ver.game_versions),
+      JSON.stringify(ver.loaders),
+      ver.file_url, ver.file_name,
+      ver.file_size, ver.file_hash_sha1,
+      ver.is_featured ? 1 : 0, // SQLite는 boolean 대신 1/0
+      ver.published_at,
     ) as { id: number }
 
-    for (const dep of (ver.dependencies ?? [])) {
+    for (const dep of ver.dependencies) {
       let depModId: number | null = null
       if (dep.project_id) {
         const dr = db.prepare('SELECT id FROM mods WHERE modrinth_id = ?').get(dep.project_id) as { id: number } | undefined
         depModId = dr?.id ?? null
       }
-      depStmt.run(vRes.id, depModId, dep.project_id ?? dep.version_id ?? 'unknown', dep.dependency_type ?? 'required')
+      depStmt.run(
+        vRes.id,
+        depModId,
+        dep.project_id ?? dep.version_id ?? 'unknown',
+        dep.version_id ?? null,
+        dep.dep_type,
+      )
     }
   }
 }
 
-// 단일 모드 즉시 캐시
-export async function fetchAndCache(modrinthId: string): Promise<number> {
-  const gameRes = db.prepare(`SELECT id FROM games WHERE slug='minecraft'`).get() as { id: number }
-  const gameId = gameRes.id
-
-  const { data: project } = await withRetry(() => api.get(`/project/${modrinthId}`))
-  const { data: versions } = await withRetry(() => api.get(`/project/${modrinthId}/version`))
-
+// 프로바이더 데이터를 로컬 카탈로그에 저장 (mrpack 가져오기 등 외부에서도 사용)
+export function cacheProject(project: ProviderProject, versions: ProviderVersion[]): number {
+  const gameId = getGameId()
   const saveTransaction = db.transaction(() => {
     const modId = saveMod(gameId, project)
     saveVersions(modId, versions)
     return modId
   })
-
   return saveTransaction()
 }
 
-// 동기화
-export async function syncModrinth(opts: SyncOptions = {}) {
+// 단일 모드 즉시 캐시
+export async function fetchAndCache(projectId: string, provider: ModProvider = defaultProvider): Promise<number> {
+  const project = await provider.getProject(projectId)
+  const versions = await provider.getVersions(projectId)
+  return cacheProject(project, versions)
+}
+
+// 인기 모드 동기화
+export async function syncCatalog(opts: SyncOptions = {}) {
   const { limit = 200, onProgress } = opts
+  const provider = getProvider(opts.provider)
 
   const logRes = db.prepare(`INSERT INTO sync_log (status) VALUES ('running') RETURNING id`).get() as { id: number }
   const logId = logRes.id
-
-  const gameRes = db.prepare(`SELECT id FROM games WHERE slug='minecraft'`).get() as { id: number }
-  const gameId = gameRes.id
 
   let offset = 0, totalSynced = 0
   const errors: string[] = []
@@ -164,42 +160,33 @@ export async function syncModrinth(opts: SyncOptions = {}) {
   try {
     while (offset < limit) {
       const take = Math.min(100, limit - offset)
-      const { data } = await withRetry(() =>
-        api.get('/search', {
-          params: {
-            facets: JSON.stringify([['project_type:mod']]),
-            limit: take, offset, index: 'downloads',
-          },
-        })
-      )
-      if (!data.hits?.length) break
+      const { hits, total } = await provider.search({ index: 'downloads', limit: take, offset })
+      if (!hits.length) break
 
-      for (const hit of data.hits) {
+      for (const hit of hits) {
         try {
-          const { data: project } = await withRetry(() => api.get(`/project/${hit.project_id}`))
+          const project = await provider.getProject(hit.project_id)
           await sleep(200)
-          const { data: versions } = await withRetry(() => api.get(`/project/${hit.project_id}/version`))
+          const versions = await provider.getVersions(hit.project_id)
           await sleep(200)
-          
-          db.transaction(() => {
-            const modId = saveMod(gameId, project)
-            saveVersions(modId, versions)
-          })()
+
+          cacheProject(project, versions)
 
           totalSynced++
-          onProgress?.({ total: data.total_hits, synced: totalSynced, name: project.title })
+          // total은 전체 모드 수가 아니라 이번 동기화 범위 기준 (진행률 계산용)
+          onProgress?.({ total: Math.min(limit, total), synced: totalSynced, name: project.name })
         } catch (err: any) {
           errors.push(`${hit.project_id}: ${err.message}`)
         }
       }
 
-      offset += data.hits.length
-      if (offset >= data.total_hits) break
+      offset += hits.length
+      if (offset >= total) break
     }
 
     db.prepare(`UPDATE sync_log SET status='done', mods_synced=?, errors=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
       .run(totalSynced, errors.slice(0, 20).join('\n') || null, logId)
-      
+
     return { success: true, synced: totalSynced, errors: errors.length }
   } catch (err: any) {
     db.prepare(`UPDATE sync_log SET status='error', errors=?, finished_at=CURRENT_TIMESTAMP WHERE id=?`)
@@ -220,12 +207,13 @@ export async function searchLocal(
       m.id, m.modrinth_id, m.name, m.slug, m.description,
       m.icon_url, m.downloads, m.categories, m.loaders,
       mv.modrinth_ver_id, mv.version_number,
-      mv.file_url, mv.file_name
+      mv.file_url, mv.file_name,
+      MAX(mv.published_at) AS latest_published_at
     FROM mods m
-    LEFT JOIN mod_versions mv ON mv.mod_id = m.id 
-      -- 서브쿼리 최적화를 위해 JOIN으로 풀고, 최신 버전 하나만 가져오도록 그룹핑
+    LEFT JOIN mod_versions mv ON mv.mod_id = m.id
+      -- GROUP BY + MAX(published_at): SQLite는 MAX가 있으면 나머지 mv 컬럼을 최신 행 기준으로 채움
   `
-  
+
   const conditions: string[] = []
   const params: any[] = []
 
@@ -247,7 +235,7 @@ export async function searchLocal(
   params.push(limit)
 
   const rows = db.prepare(sql).all(...params) as ModRow[]
-  
+
   // JSON 파싱해서 배열로 원복
   return rows.map(r => ({
     ...r,
@@ -267,6 +255,7 @@ export async function getDependencies(
     SELECT mv.id AS ver_id
     FROM mods m
     JOIN mod_versions mv ON mv.mod_id = m.id
+    WHERE m.modrinth_id = ?
   `
   const verParams: any[] = [modrinthId]
 
@@ -285,22 +274,24 @@ export async function getDependencies(
     SELECT
       d.dep_type, d.modrinth_dep_id,
       m.modrinth_id, m.name, m.description, m.icon_url, m.downloads,
-      mv2.version_number, mv2.modrinth_ver_id, mv2.file_url, mv2.file_name
+      mv2.version_number, mv2.modrinth_ver_id, mv2.file_url, mv2.file_name,
+      MAX(mv2.published_at) AS latest_published_at
     FROM mod_dependencies d
     LEFT JOIN mods m ON m.id = d.depends_on_mod_id
     LEFT JOIN mod_versions mv2 ON mv2.mod_id = m.id
   `
   const depParams: any[] = []
 
-  let depConditions = ` WHERE d.mod_version_id = ? AND d.dep_type IN ('required','optional')`
-  depParams.push(versionId)
-
+  // 버전 필터는 WHERE가 아닌 JOIN 조건에 둬야 로컬에 캐시 안 된 의존성(m이 NULL)이 사라지지 않음
   if (gameVersion) {
-    depConditions += ` AND mv2.game_versions LIKE ?`
+    depSql += ` AND mv2.game_versions LIKE ?`
     depParams.push(`%"${gameVersion}"%`)
   }
 
-  depSql += depConditions + ` GROUP BY d.id ORDER BY d.dep_type ASC`
+  depSql += ` WHERE d.mod_version_id = ? AND d.dep_type IN ('required','optional')`
+  depParams.push(versionId)
+
+  depSql += ` GROUP BY d.id ORDER BY d.dep_type ASC`
 
   return db.prepare(depSql).all(...depParams) as ModRow[]
 }
@@ -323,7 +314,9 @@ export async function getModDetail(
     WHERE m.modrinth_id = ?
       AND (? IS NULL OR mv.game_versions LIKE ?)
       AND (? IS NULL OR LOWER(mv.loaders) LIKE ?)
-    ORDER BY mv.published_at DESC
+    ORDER BY
+      CASE mv.version_type WHEN 'release' THEN 0 WHEN 'beta' THEN 1 ELSE 2 END,
+      mv.published_at DESC
     LIMIT 1
   `).get(
     modrinthId,
@@ -349,14 +342,16 @@ export async function getModDetail(
 
 export async function checkProfileUpdates(
   profileId: string,
-  opts: { gameVersion?: string; loader?: string } = {}
+  opts: { gameVersion?: string; loader?: string; modrinthIds?: string[] } = {}
 ) {
   const installed = db.prepare(`
     SELECT
       m.id, m.modrinth_id, m.slug, m.name, m.icon_url,
       mv.id AS installed_ver_db_id,
       mv.modrinth_ver_id AS installed_version_id,
-      mv.version_number AS installed_version_number
+      mv.version_number AS installed_version_number,
+      mv.version_type AS installed_version_type,
+      mv.published_at AS installed_published_at
     FROM profile_mods pm
     JOIN mods m ON pm.mod_id = m.id
     LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
@@ -364,10 +359,21 @@ export async function checkProfileUpdates(
     ORDER BY m.name ASC
   `).all(profileId) as any[]
 
+  // 특정 모드만 확인하고 싶을 때(업데이트 적용 등) 불필요한 API 재조회를 피한다
+  const targets = Array.isArray(opts.modrinthIds) && opts.modrinthIds.length
+    ? installed.filter((mod) => opts.modrinthIds!.includes(mod.modrinth_id))
+    : installed
+
   const results: any[] = []
 
-  for (const mod of installed) {
+  for (const mod of targets) {
     await fetchAndCache(mod.modrinth_id).catch(() => {})
+
+    // 설치본이 release면 안정 채널을 우선 추적하고, beta/alpha면 해당 채널의 최신도 후보에 포함
+    const preferStable = mod.installed_version_type !== 'beta' && mod.installed_version_type !== 'alpha'
+    const orderClause = preferStable
+      ? `CASE version_type WHEN 'release' THEN 0 WHEN 'beta' THEN 1 ELSE 2 END, published_at DESC`
+      : `published_at DESC`
 
     const latest = db.prepare(`
       SELECT
@@ -380,7 +386,7 @@ export async function checkProfileUpdates(
       WHERE mod_id = ?
         AND (? IS NULL OR game_versions LIKE ?)
         AND (? IS NULL OR LOWER(loaders) LIKE ?)
-      ORDER BY published_at DESC
+      ORDER BY ${orderClause}
       LIMIT 1
     `).get(
       mod.id,
@@ -389,6 +395,14 @@ export async function checkProfileUpdates(
       opts.loader ?? null,
       opts.loader ? `%"${opts.loader.toLowerCase()}"%` : null,
     ) as any
+
+    // 발행일 비교로 다운그레이드 제안 방지 (설치본 발행일을 모르면 업데이트 허용)
+    const isNewer = latest?.published_at && mod.installed_published_at
+      ? latest.published_at > mod.installed_published_at
+      : true
+    const updateAvailable = Boolean(
+      latest?.latest_version_id && latest.latest_version_id !== mod.installed_version_id && isNewer
+    )
 
     results.push({
       modrinth_id: mod.modrinth_id,
@@ -402,8 +416,8 @@ export async function checkProfileUpdates(
       latest_file_url: latest?.file_url ?? null,
       latest_file_name: latest?.file_name ?? null,
       latest_ver_db_id: latest?.latest_ver_db_id ?? null,
-      update_available: Boolean(latest?.latest_version_id && latest.latest_version_id !== mod.installed_version_id),
-      status: latest ? (latest.latest_version_id !== mod.installed_version_id ? 'update_available' : 'up_to_date') : 'unknown',
+      update_available: updateAvailable,
+      status: latest ? (updateAvailable ? 'update_available' : 'up_to_date') : 'unknown',
     })
   }
 
@@ -428,31 +442,26 @@ export function getSyncStatus() {
   return { logs, totalMods: countRes.count }
 }
 
-// Modrinth API 직접 검색 (fallback)
+// 프로바이더 직접 검색 (fallback)
 export async function searchRemote(
   query: string,
-  opts: { loader?: string; gameVersion?: string; limit?: number } = {}
+  opts: { loader?: string; gameVersion?: string; limit?: number; provider?: string } = {}
 ): Promise<ModRow[]> {
   const { loader, gameVersion, limit = 10 } = opts
+  const provider = getProvider(opts.provider)
 
-  const facets = [['project_type:mod']]
-  if (loader)      facets.push([`categories:${loader.toLowerCase()}`])
-  if (gameVersion) facets.push([`versions:${gameVersion}`])
-
-  const { data } = await api.get('/search', {
-    params: { query, facets: JSON.stringify(facets), limit, index: 'relevance' },
-  })
+  const { hits } = await provider.search({ query, loader, gameVersion, limit, index: 'relevance' })
 
   // 백그라운드 캐시 (fire & forget)
-  for (const hit of data.hits.slice(0, 3)) {
-    fetchAndCache(hit.project_id).catch(() => {})
+  for (const hit of hits.slice(0, 3)) {
+    fetchAndCache(hit.project_id, provider).catch(() => {})
   }
 
-  return data.hits.map((h: any) => ({
+  return hits.map((h) => ({
     modrinth_id:     h.project_id,
-    name:            h.title,
-    slug:            h.slug,
-    description:     h.description,
+    name:            h.name,
+    slug:            h.slug ?? h.project_id,
+    description:     h.description ?? '',
     icon_url:        h.icon_url,
     downloads:       h.downloads,
     categories:      h.categories,
@@ -462,5 +471,5 @@ export async function searchRemote(
     file_url:        null,
     file_name:       null,
     source:          'api' as const,
-  }))
+  })) as ModRow[]
 }

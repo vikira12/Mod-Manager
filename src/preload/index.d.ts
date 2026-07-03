@@ -3,18 +3,21 @@ export interface ModRow {
   ver_id?: number
   modrinth_id: string
   name: string
-  slug: string
+  slug?: string
   description: string
   icon_url: string | null
   downloads: number
-  categories: string[]
-  loaders: string[]
+  // resolver의 DepNode처럼 일부 경로에서는 채워지지 않음
+  categories?: string[]
+  loaders?: string[]
   version_number: string
   modrinth_ver_id: string
   file_url: string | null
   file_name: string | null
   dep_type?: DepType
   depth?: number
+  // 의존성이 이 정확한 버전을 고정(pin)해서 선택된 경우
+  pinned?: boolean
   children?: DepNode[]
   source?: 'local' | 'api' | 'mixed'
   recommendation_score?: number
@@ -73,6 +76,22 @@ export interface UpdateCheckResult {
   error?: string
 }
 
+export interface AppliedUpdate {
+  modrinth_id: string
+  name: string
+  fileName: string
+  version_number: string | null
+  removedOld: string | null
+}
+
+export interface ApplyUpdatesResult {
+  ok: boolean
+  applied: AppliedUpdate[]
+  failed: { name: string; reason: string }[]
+  backupPath: string | null
+  error?: string
+}
+
 export interface InstallResult {
   success: boolean
   files: string[]
@@ -93,6 +112,7 @@ export interface SyncStatus {
     id: number
     status: string
     mods_synced: number
+    errors?: string | null
     started_at: string
     finished_at: string | null
   }[]
@@ -127,7 +147,20 @@ export interface DepNode {
   file_name:       string | null
   dep_type:        DepType
   depth:           number
+  pinned:          boolean
   children:        DepNode[]
+}
+
+export interface PinConflict {
+  modrinth_id: string
+  name: string
+  chosen_version_id: string | null
+  chosen_version_number: string | null
+  requests: {
+    version_id: string
+    version_number: string | null
+    requested_by: string[]
+  }[]
 }
 
 export interface ResolveResult {
@@ -137,6 +170,7 @@ export interface ResolveResult {
   required:     DepNode[]
   optional:     DepNode[]
   conflicts:    { mod: DepNode; conflictWith: string }[]
+  pinConflicts: PinConflict[]
   error?:       string
 }
 
@@ -196,6 +230,28 @@ export interface ExportPackResult {
   error?: string
 }
 
+export interface MrpackProgress {
+  total: number
+  done: number
+  name: string
+}
+
+export interface MrpackImportResult {
+  ok: boolean
+  canceled?: boolean
+  profileId?: number
+  profileName?: string
+  gameVersion?: string | null
+  loader?: string | null
+  totalFiles?: number
+  downloaded?: number
+  registered?: number
+  overrides?: number
+  overridesSkipped?: number
+  failed?: { name: string; reason: string }[]
+  error?: string
+}
+
 export interface ImportPackResult {
   ok: boolean
   canceled?: boolean
@@ -209,12 +265,97 @@ export interface ImportPackResult {
   error?: string
 }
 
+export interface ActivateProfileResult {
+  ok: boolean
+  storagePath?: string
+  targetPath?: string
+  backupPath?: string | null
+  adoptedFiles?: number
+  error?: string
+}
+
+export interface DeviceCodeInfo {
+  user_code: string
+  verification_uri: string
+  expires_in: number
+  interval: number
+  message: string
+}
+
+export interface AuthStatus {
+  loggedIn: boolean
+  name?: string
+  uuid?: string
+  tokenValid?: boolean
+  clientIdConfigured: boolean
+  offlineEnabled: boolean
+  offlineUsername?: string
+}
+
+export interface AuthStartResult {
+  ok: boolean
+  profile?: { id: string; name: string }
+  error?: string
+  errorCode?: 'NO_CLIENT_ID' | 'CANCELED' | 'EXPIRED' | 'NO_XBOX' | 'CHILD_ACCOUNT' | 'NO_PROFILE' | 'UNKNOWN'
+}
+
+export interface GameFilesProgress {
+  phase: 'client' | 'libraries' | 'assets'
+  done: number
+  total: number
+  name: string
+}
+
+export interface PrepareGameFilesResult {
+  ok: boolean
+  versionId?: string
+  jarId?: string
+  loaderInstalled?: boolean
+  clientDownloaded?: boolean
+  librariesTotal?: number
+  librariesDownloaded?: number
+  librariesMissing?: number
+  assetsTotal?: number
+  assetsDownloaded?: number
+  assetsFailed?: number
+  needsLoaderInstall?: boolean
+  helpUrl?: string
+  error?: string
+}
+
+export interface GameLaunchResult {
+  ok: boolean
+  pid?: number
+  versionId?: string
+  javaMajor?: number | null
+  offline?: boolean
+  activated?: boolean
+  needsLogin?: boolean
+  needsLoaderInstall?: boolean
+  helpUrl?: string
+  error?: string
+}
+
+export interface LaunchProfileResult {
+  ok: boolean
+  versionId?: string | null
+  loaderInstalled?: boolean
+  launcherOpened?: boolean
+  registeredName?: string
+  activated?: boolean
+  needsLoaderInstall?: boolean
+  helpUrl?: string
+  warning?: string
+  error?: string
+}
+
 export interface ElectronAPI {
   searchMod:          (query: string, opts?: { loader?: string; gameVersion?: string }) => Promise<SearchResult>
   getRecommendations: (data: { profileId: string; loader?: string; gameVersion?: string; limit?: number }) => Promise<RecommendationResult>
   getDependencies:    (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<DependencyResult>
   getModDetail:       (modrinthId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<ModDetailResult>
-  checkProfileUpdates: (profileId: string, opts?: { gameVersion?: string; loader?: string }) => Promise<UpdateCheckResult>
+  checkProfileUpdates: (profileId: string, opts?: { gameVersion?: string; loader?: string; modrinthIds?: string[] }) => Promise<UpdateCheckResult>
+  applyProfileUpdates: (profileId: string, opts?: { gameVersion?: string; loader?: string; modrinthIds?: string[] }) => Promise<ApplyUpdatesResult>
 
   // 의존성 해결 엔진
   resolveDeps:        (modrinthId: string, opts?: { gameVersion?: string; loader?: string; selected?: string[] }) => Promise<ResolveResult>
@@ -246,11 +387,42 @@ export interface ElectronAPI {
   createProfile: (data: { name: string; gameVersion: string; loader: string }) => Promise<{ ok: boolean; id?: number }>
   deleteProfile: (id: string) => Promise<{ ok: boolean }>
   updateProfilePath: (profileId: string, installPath: string | null) => Promise<{ ok: boolean; error?: string }>
+  activateProfile: (profileId: string) => Promise<ActivateProfileResult>
+  deactivateProfile: () => Promise<{ ok: boolean; targetPath?: string; error?: string }>
+  launchProfile: (profileId: string) => Promise<LaunchProfileResult>
+  onLoaderInstallProgress: (cb: (data: { message: string }) => void) => () => void
+  prepareGameFiles: (profileId: string) => Promise<PrepareGameFilesResult>
+  onGameFilesProgress: (cb: (data: GameFilesProgress) => void) => () => void
+  launchGameDirect: (profileId: string) => Promise<GameLaunchResult>
+  stopGame: (profileId: string) => Promise<{ ok: boolean }>
+  onGameLog: (cb: (data: { lines: string[] }) => void) => () => void
+  onGameExit: (cb: (data: {
+    profileId: number
+    code: number | null
+    crashed: boolean
+    crashReportPath: string | null
+    crashSummary: string | null
+  }) => void) => () => void
+
+  // Microsoft 계정 인증
+  authStatus: () => Promise<AuthStatus>
+  authStart: () => Promise<AuthStartResult>
+  authCancel: () => Promise<{ ok: boolean }>
+  authLogout: () => Promise<{ ok: boolean }>
+  authGetClientId: () => Promise<{ clientId: string | null }>
+  authSetClientId: (clientId: string | null) => Promise<{ ok: boolean }>
+  authSetOffline: (enabled: boolean, username?: string) => Promise<{ ok: boolean; error?: string; status?: AuthStatus }>
+  getLaunchSettings: () => Promise<{ memoryMb: number; totalMemoryMb: number }>
+  setLaunchSettings: (data: { memoryMb?: number }) => Promise<{ ok: boolean }>
+  onAuthDeviceCode: (cb: (data: DeviceCodeInfo) => void) => () => void
+  onAuthStage: (cb: (data: { message: string }) => void) => () => void
   backupProfileMods: (profileId: string) => Promise<{ ok: boolean; backupPath?: string; error?: string }>
   restoreProfileBackup: (profileId: string, backupPath: string) => Promise<{ ok: boolean; restoredPath?: string; currentBackup?: string | null; error?: string }>
   getInstalledMods: (profileId: string) => Promise<any[]>
   exportProfilePack: (profileId: string) => Promise<ExportPackResult>
   importProfilePack: () => Promise<ImportPackResult>
+  importMrpack: () => Promise<MrpackImportResult>
+  onMrpackProgress: (cb: (data: MrpackProgress) => void) => () => void
   uninstallMod: (profileId: string, modId: string, opts?: { deleteFile?: boolean }) => Promise<{ ok: boolean; deletedFile?: string | null; warning?: string }>
   saveProfileMods: (profileId: string, mods: Array<number | { id: number; ver_id?: number }>) => Promise<{ ok: boolean }>
 }

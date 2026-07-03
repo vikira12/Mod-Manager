@@ -1,12 +1,13 @@
 import { ipcMain, shell, BrowserWindow, dialog, app } from 'electron'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
-import axios from 'axios'
-import { db } from './db'
+import { db, getSetting, setSetting } from './db'
 import {
   searchLocal, searchRemote, getDependencies,
-  syncModrinth, getSyncStatus, getModDetail, checkProfileUpdates,
-} from './modrinth'
+  syncCatalog, getSyncStatus, getModDetail, checkProfileUpdates,
+  getGameId,
+} from './catalog'
 import { resolveDependencies, validateSelection } from './resolver'
 import { getDefaultModsPath, scanModJars } from './jarScanner'
 import {
@@ -14,6 +15,13 @@ import {
   getCustomRuleConflicts,
   jarModsToConflictSubjects,
 } from './conflicts'
+import { launchMinecraftProfile, resolveOrInstallVersion } from './launcher'
+import { ensureGameFiles } from './gameFiles'
+import { launchGameDirect, stopGame } from './gameLaunch'
+import { downloadFile } from './download'
+import { getProfileModsPath, getProfileStoragePath } from './profilePaths'
+import { importMrpackFromFile } from './mrpack'
+import { startDeviceAuth, cancelDeviceAuth, getAuthStatus, logout as authLogout, setClientId, getClientId, setOfflineConfig } from './auth'
 
 function parseJsonArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String)
@@ -27,8 +35,7 @@ function parseJsonArray(value: unknown): string[] {
 }
 
 function upsertImportedMod(mod: any, profile: any): { modId: number; versionId: number } {
-  const game = db.prepare(`SELECT id FROM games WHERE slug = 'minecraft'`).get() as { id: number } | undefined
-  const gameId = game?.id ?? 1
+  const gameId = getGameId()
   const projectId = String(mod.project_id)
   const versionId = mod.version_id
     ? String(mod.version_id)
@@ -90,9 +97,80 @@ function upsertImportedMod(mod: any, profile: any): { modId: number; versionId: 
   return { modId: modRow.id, versionId: versionRow.id }
 }
 
-function getProfileModsPath(profileId: string): string {
-  const profile = db.prepare('SELECT install_path FROM profiles WHERE id = ?').get(profileId) as { install_path?: string | null } | undefined
-  return path.resolve(profile?.install_path || getDefaultModsPath())
+// existsSync는 깨진 심볼릭 링크를 false로 판정하므로 lstat으로 직접 확인
+function statNoFollow(targetPath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(targetPath)
+  } catch {
+    return null
+  }
+}
+
+function removeJunctionIfExists(targetDir: string): boolean {
+  const stat = statNoFollow(targetDir)
+  if (stat?.isSymbolicLink()) {
+    fs.unlinkSync(targetDir)
+    return true
+  }
+  return false
+}
+
+// 프로필 보관소를 게임 mods 폴더에 junction으로 연결 (활성화/실행 양쪽에서 사용)
+function activateProfileInternal(profileId: string): {
+  ok: boolean
+  storagePath?: string
+  targetPath?: string
+  backupPath?: string | null
+  adoptedFiles?: number
+  error?: string
+} {
+  try {
+    const profile = db.prepare('SELECT id, name, install_path FROM profiles WHERE id = ?').get(profileId) as
+      { id: number; name: string; install_path?: string | null } | undefined
+    if (!profile) return { ok: false, error: '프로필을 찾을 수 없습니다.' }
+
+    const targetDir = path.resolve(getDefaultModsPath())
+
+    // install_path가 게임 mods 폴더 자체를 가리키면 순환 링크가 되므로 전용 보관소로 대체
+    let storageDir = profile.install_path ? path.resolve(profile.install_path) : ''
+    if (!storageDir || storageDir === targetDir) {
+      storageDir = getProfileStoragePath(profile.id)
+    }
+    fs.mkdirSync(storageDir, { recursive: true })
+
+    let backupPath: string | null = null
+    let adoptedFiles = 0
+
+    const targetStat = statNoFollow(targetDir)
+    if (targetStat?.isSymbolicLink()) {
+      fs.unlinkSync(targetDir)
+    } else if (targetStat) {
+      // 실제 폴더가 있으면: 보관소가 비어있을 때 기존 모드를 프로필로 흡수하고, 원본은 백업으로 보존
+      if (fs.readdirSync(storageDir).length === 0) {
+        for (const entry of fs.readdirSync(targetDir)) {
+          fs.cpSync(path.join(targetDir, entry), path.join(storageDir, entry), { recursive: true })
+          adoptedFiles++
+        }
+      }
+      backupPath = `${targetDir}_backup_${Date.now()}`
+      fs.renameSync(targetDir, backupPath)
+    } else {
+      fs.mkdirSync(path.dirname(targetDir), { recursive: true })
+    }
+
+    fs.symlinkSync(storageDir, targetDir, 'junction')
+    console.log(`[IPC] 프로필 ${profile.name} 활성화: ${targetDir} -> ${storageDir}`)
+
+    db.transaction(() => {
+      db.prepare('UPDATE profiles SET is_active = 0').run()
+      db.prepare('UPDATE profiles SET is_active = 1, install_path = ? WHERE id = ?').run(storageDir, profileId)
+    })()
+
+    return { ok: true, storagePath: storageDir, targetPath: targetDir, backupPath, adoptedFiles }
+  } catch (err: any) {
+    console.error('[IPC] 프로필 활성화 실패:', err)
+    return { ok: false, error: err.message }
+  }
 }
 
 function createModsBackup(modsDir: string, label = 'manual'): string | null {
@@ -116,7 +194,7 @@ export function registerHandlers(win: BrowserWindow): void {
       const result = await resolveDependencies(modrinthId, opts)
       return result
     } catch (err: any) {
-      return { ok: false, error: err.message, root: null, installOrder: [], required: [], optional: [], conflicts: [] }
+      return { ok: false, error: err.message, root: null, installOrder: [], required: [], optional: [], conflicts: [], pinConflicts: [] }
     }
   })
 
@@ -238,7 +316,8 @@ export function registerHandlers(win: BrowserWindow): void {
           m.id, m.modrinth_id, m.name, m.slug, m.description,
           m.icon_url, m.downloads, m.categories, m.loaders,
           mv.id AS ver_id, mv.modrinth_ver_id, mv.version_number,
-          mv.file_url, mv.file_name
+          mv.file_url, mv.file_name,
+          MAX(mv.published_at) AS latest_published_at
         FROM mods m
         JOIN mod_versions mv ON mv.mod_id = m.id
         WHERE (? IS NULL OR LOWER(mv.loaders) LIKE ?)
@@ -310,6 +389,86 @@ export function registerHandlers(win: BrowserWindow): void {
     }
   })
 
+  // 업데이트 적용: 최신 jar 다운로드 → profile_mods 버전 갱신 → 구버전 jar 정리
+  ipcMain.handle('apply-profile-updates', async (_e, profileId: string, opts: {
+    gameVersion?: string
+    loader?: string
+    modrinthIds?: string[]
+  } = {}) => {
+    try {
+      const check = await checkProfileUpdates(profileId, opts)
+      if (!check.ok) {
+        return { ok: false, applied: [], failed: [], backupPath: null, error: '업데이트 정보를 가져오지 못했습니다.' }
+      }
+
+      const targets = check.updates.filter(
+        (u: any) => u.update_available && u.latest_file_url && u.latest_ver_db_id
+      )
+      if (targets.length === 0) {
+        return { ok: true, applied: [], failed: [], backupPath: null }
+      }
+
+      const modsDir = getProfileModsPath(profileId)
+      fs.mkdirSync(modsDir, { recursive: true })
+      const backupPath = createModsBackup(modsDir, `before-update-${profileId}`)
+
+      const applied: any[] = []
+      const failed: { name: string; reason: string }[] = []
+
+      for (const u of targets) {
+        try {
+          const modRow = db.prepare('SELECT id FROM mods WHERE modrinth_id = ?').get(u.modrinth_id) as { id: number } | undefined
+          if (!modRow) throw new Error('로컬 DB에서 모드를 찾을 수 없습니다.')
+
+          // 교체 후 정리할 수 있게, 현재 설치된 파일명을 미리 확보
+          const current = db.prepare(`
+            SELECT mv.file_name
+            FROM profile_mods pm
+            LEFT JOIN mod_versions mv ON pm.mod_version_id = mv.id
+            WHERE pm.profile_id = ? AND pm.mod_id = ?
+          `).get(profileId, modRow.id) as { file_name?: string | null } | undefined
+
+          const newFileName = u.latest_file_name ?? `${u.slug ?? u.modrinth_id}.jar`
+          const dest = path.join(modsDir, newFileName)
+          if (!fs.existsSync(dest)) {
+            await downloadFile(u.latest_file_url, dest)
+          }
+
+          db.prepare(`
+            UPDATE profile_mods SET mod_version_id = ?, installed_at = CURRENT_TIMESTAMP
+            WHERE profile_id = ? AND mod_id = ?
+          `).run(u.latest_ver_db_id, profileId, modRow.id)
+
+          // 구버전 jar 정리 (새 파일명과 다를 때만, mods 폴더 밖은 건드리지 않음)
+          let removedOld: string | null = null
+          if (current?.file_name && current.file_name !== newFileName) {
+            const oldPath = path.resolve(modsDir, current.file_name)
+            if (oldPath.startsWith(modsDir + path.sep) && fs.existsSync(oldPath)) {
+              fs.unlinkSync(oldPath)
+              removedOld = current.file_name
+            }
+          }
+
+          win.webContents.send('install-progress', { name: u.name, fileName: newFileName, status: 'done' })
+          applied.push({
+            modrinth_id: u.modrinth_id,
+            name: u.name,
+            fileName: newFileName,
+            version_number: u.latest_version_number,
+            removedOld,
+          })
+        } catch (err: any) {
+          failed.push({ name: u.name, reason: err.message })
+          win.webContents.send('install-progress', { name: u.name, status: 'error', reason: err.message })
+        }
+      }
+
+      return { ok: failed.length === 0, applied, failed, backupPath }
+    } catch (err: any) {
+      return { ok: false, applied: [], failed: [], backupPath: null, error: err.message }
+    }
+  })
+
   // 모드 설치
   ipcMain.handle('download-mods', async (_e, mods: any[], installPath?: string) => {
     const targetDir = installPath ?? path.join(
@@ -332,13 +491,7 @@ export function registerHandlers(win: BrowserWindow): void {
         const dest = path.join(targetDir, fileName)
 
         if (!fs.existsSync(dest)) {
-          const writer = fs.createWriteStream(dest)
-          const resp = await axios({ url: mod.file_url, method: 'GET', responseType: 'stream' })
-          await new Promise<void>((res, rej) => {
-            resp.data.pipe(writer)
-            writer.on('finish', res)
-            writer.on('error', rej)
-          })
+          await downloadFile(mod.file_url, dest)
         }
 
         win.webContents.send('install-progress', { name: mod.name, fileName, status: 'done' })
@@ -360,18 +513,16 @@ export function registerHandlers(win: BrowserWindow): void {
         fs.mkdirSync(sourceDir, { recursive: true })
       }
 
-      // 2. 타겟 폴더
-      if (fs.existsSync(targetDir)) {
-        const stat = fs.lstatSync(targetDir)
-        if (stat.isSymbolicLink()) {
-          // 이미 링크가 걸려있다면 안전하게 해제
-          fs.unlinkSync(targetDir)
-        } else {
-          // 실제 폴더가 존재한다면 백업 처리
-          const backupPath = `${targetDir}_backup_${Date.now()}`
-          fs.renameSync(targetDir, backupPath)
-          console.log(`[IPC] 기존 폴더 백업 완료: ${backupPath}`)
-        }
+      // 2. 타겟 폴더 (existsSync는 깨진 링크에 false를 주므로 lstat 기반으로 판별)
+      const targetStat = statNoFollow(targetDir)
+      if (targetStat?.isSymbolicLink()) {
+        // 이미 링크가 걸려있다면 안전하게 해제
+        fs.unlinkSync(targetDir)
+      } else if (targetStat) {
+        // 실제 폴더가 존재한다면 백업 처리
+        const backupPath = `${targetDir}_backup_${Date.now()}`
+        fs.renameSync(targetDir, backupPath)
+        console.log(`[IPC] 기존 폴더 백업 완료: ${backupPath}`)
       } else {
         // 부모 폴더가 없는 경우 대비
         fs.mkdirSync(path.dirname(targetDir), { recursive: true })
@@ -390,12 +541,8 @@ export function registerHandlers(win: BrowserWindow): void {
 
   ipcMain.handle('remove-junction', async (_e, targetDir: string) => {
     try {
-      if (fs.existsSync(targetDir)) {
-        const stat = fs.lstatSync(targetDir)
-        if (stat.isSymbolicLink()) {
-          fs.unlinkSync(targetDir)
-          console.log(`[IPC] Junction 해제 완료: ${targetDir}`)
-        }
+      if (removeJunctionIfExists(targetDir)) {
+        console.log(`[IPC] Junction 해제 완료: ${targetDir}`)
       }
       return { ok: true }
     } catch (err: any) {
@@ -406,7 +553,7 @@ export function registerHandlers(win: BrowserWindow): void {
 
   // DB 동기화
   ipcMain.handle('sync-modrinth', async (_e, opts: { limit?: number } = {}) => {
-    return syncModrinth({
+    return syncCatalog({
       ...opts,
       onProgress: (data) => win.webContents.send('sync-progress', data),
     })
@@ -434,16 +581,173 @@ export function registerHandlers(win: BrowserWindow): void {
   // 프로필 생성
   ipcMain.handle('create-profile', async (_e, data: { name: string, gameVersion: string, loader: string }) => {
     const info = db.prepare(
-      'INSERT INTO profiles (name, game_version, loader) VALUES (?, ?, ?)'
-    ).run(data.name, data.gameVersion, data.loader);
+      'INSERT INTO profiles (game_id, name, game_version, loader) VALUES (?, ?, ?, ?)'
+    ).run(getGameId(), data.name, data.gameVersion, data.loader);
     return { ok: true, id: info.lastInsertRowid };
   });
 
   // 프로필 삭제
   ipcMain.handle('delete-profile', async (_e, id: string) => {
+    // 연결된 프로필을 지우면 게임 폴더에 걸린 junction도 함께 해제
+    const profile = db.prepare('SELECT is_active FROM profiles WHERE id = ?').get(id) as { is_active?: number } | undefined
+    if (profile?.is_active) {
+      removeJunctionIfExists(path.resolve(getDefaultModsPath()))
+    }
     db.prepare('DELETE FROM profiles WHERE id = ?').run(id);
     return { ok: true };
   });
+
+  // 프로필 활성화: 프로필 보관소를 게임 mods 폴더에 junction으로 연결
+  ipcMain.handle('activate-profile', async (_e, profileId: string) => activateProfileInternal(profileId))
+
+  // ---------- Microsoft 계정 인증 ----------
+
+  ipcMain.handle('auth-status', async () => getAuthStatus())
+
+  ipcMain.handle('auth-start', async () => {
+    return startDeviceAuth(
+      (info) => win.webContents.send('auth-device-code', info),
+      (message) => win.webContents.send('auth-stage', { message }),
+    )
+  })
+
+  ipcMain.handle('auth-cancel', async () => {
+    cancelDeviceAuth()
+    return { ok: true }
+  })
+
+  ipcMain.handle('auth-logout', async () => {
+    authLogout()
+    return { ok: true }
+  })
+
+  ipcMain.handle('auth-get-client-id', async () => ({ clientId: getClientId() }))
+
+  ipcMain.handle('auth-set-client-id', async (_e, clientId: string | null) => {
+    setClientId(clientId)
+    return { ok: true }
+  })
+
+  ipcMain.handle('auth-set-offline', async (_e, enabled: boolean, username?: string) => {
+    const res = setOfflineConfig(enabled, username)
+    return { ...res, status: getAuthStatus() }
+  })
+
+  // ---------- 실행 설정 ----------
+
+  ipcMain.handle('get-launch-settings', async () => ({
+    memoryMb: parseInt(getSetting('java_memory_mb') ?? '', 10) || 4096,
+    totalMemoryMb: Math.floor(os.totalmem() / (1024 * 1024)),
+  }))
+
+  ipcMain.handle('set-launch-settings', async (_e, data: { memoryMb?: number }) => {
+    if (typeof data.memoryMb === 'number' && Number.isFinite(data.memoryMb)) {
+      const clamped = Math.min(32768, Math.max(1024, Math.floor(data.memoryMb)))
+      setSetting('java_memory_mb', String(clamped))
+    }
+    return { ok: true }
+  })
+
+  const safeSend = (channel: string, payload: unknown) => {
+    if (!win.isDestroyed()) win.webContents.send(channel, payload)
+  }
+
+  // 게임 로그는 줄 단위로 오면 IPC가 넘치므로 250ms 버퍼로 묶어 보냄
+  let gameLogBuffer: string[] = []
+  let gameLogTimer: NodeJS.Timeout | null = null
+  const pushGameLog = (line: string) => {
+    gameLogBuffer.push(line)
+    if (!gameLogTimer) {
+      gameLogTimer = setTimeout(() => {
+        safeSend('game-log', { lines: gameLogBuffer.splice(0) })
+        gameLogTimer = null
+      }, 250)
+    }
+  }
+
+  // 자체 실행: 세션 확인 → 로더/게임 파일 확보 → JVM 직접 spawn (공식 런처 불필요)
+  ipcMain.handle('launch-game-direct', async (_e, profileId: string) => {
+    try {
+      const profile = db.prepare('SELECT id, name, game_version, loader FROM profiles WHERE id = ?').get(profileId) as
+        { id: number; name: string; game_version?: string | null; loader?: string | null } | undefined
+      if (!profile) return { ok: false, error: '프로필을 찾을 수 없습니다.' }
+
+      // 실행 전 이 프로필의 mods가 게임 폴더에 연결되어 있도록 보장
+      const activation = activateProfileInternal(String(profile.id))
+      if (!activation.ok) {
+        return { ok: false, error: `프로필 연결에 실패했습니다: ${activation.error}` }
+      }
+
+      const result = await launchGameDirect(profile, {
+        onStage: (message) => safeSend('loader-install-progress', { message }),
+        onFilesProgress: (p) => safeSend('game-files-progress', p),
+        onLog: pushGameLog,
+        onExit: (info) => safeSend('game-exit', { profileId: profile.id, ...info }),
+      })
+      return { ...result, activated: true }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  ipcMain.handle('stop-game', async (_e, profileId: string) => {
+    return { ok: stopGame(Number(profileId)) }
+  })
+
+  // 프로필 실행: mods 연결 보장 → 공식 런처 프로필 등록 → 런처 실행
+  ipcMain.handle('launch-profile', async (_e, profileId: string) => {
+    try {
+      const profile = db.prepare('SELECT id, name, game_version, loader FROM profiles WHERE id = ?').get(profileId) as
+        { id: number; name: string; game_version?: string | null; loader?: string | null } | undefined
+      if (!profile) return { ok: false, error: '프로필을 찾을 수 없습니다.' }
+
+      // 실행 전 이 프로필의 mods가 게임 폴더에 연결되어 있도록 보장
+      const activation = activateProfileInternal(String(profile.id))
+      if (!activation.ok) {
+        return { ok: false, error: `프로필 연결에 실패했습니다: ${activation.error}` }
+      }
+
+      const result = await launchMinecraftProfile(profile, (message) =>
+        win.webContents.send('loader-install-progress', { message })
+      )
+      return { ...result, activated: true }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  // 게임 파일 준비: 로더 확보 → 클라이언트 jar/라이브러리/에셋 다운로드 (자체 실행 2단계)
+  ipcMain.handle('prepare-game-files', async (_e, profileId: string) => {
+    try {
+      const profile = db.prepare('SELECT id, name, game_version, loader FROM profiles WHERE id = ?').get(profileId) as
+        { id: number; name: string; game_version?: string | null; loader?: string | null } | undefined
+      if (!profile) return { ok: false, error: '프로필을 찾을 수 없습니다.' }
+
+      const ensured = await resolveOrInstallVersion(profile.game_version, profile.loader, (message) =>
+        win.webContents.send('loader-install-progress', { message })
+      )
+      if (!ensured.ok) return ensured
+
+      const result = await ensureGameFiles(ensured.versionId!, (p) =>
+        win.webContents.send('game-files-progress', p)
+      )
+      return { ok: true, loaderInstalled: ensured.loaderInstalled, ...result }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
+
+  // 프로필 비활성화: 게임 mods 폴더의 junction 해제
+  ipcMain.handle('deactivate-profile', async () => {
+    try {
+      const targetDir = path.resolve(getDefaultModsPath())
+      removeJunctionIfExists(targetDir)
+      db.prepare('UPDATE profiles SET is_active = 0').run()
+      return { ok: true, targetPath: targetDir }
+    } catch (err: any) {
+      return { ok: false, error: err.message }
+    }
+  })
 
   ipcMain.handle('update-profile-path', async (_e, profileId: string, installPath: string | null) => {
     db.prepare('UPDATE profiles SET install_path = ? WHERE id = ?').run(installPath, profileId)
@@ -617,10 +921,11 @@ export function registerHandlers(win: BrowserWindow): void {
 
       const profileName = `${manifest.profile?.name ?? 'Imported Pack'} (가져옴)`
       const createProfile = db.prepare(`
-        INSERT INTO profiles (name, game_version, loader, install_path)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO profiles (game_id, name, game_version, loader, install_path)
+        VALUES (?, ?, ?, ?, ?)
       `)
       const profileInfo = createProfile.run(
+        getGameId(),
         profileName,
         manifest.profile?.game_version ?? null,
         manifest.profile?.loader ?? null,
@@ -656,13 +961,7 @@ export function registerHandlers(win: BrowserWindow): void {
             const fileName = mod.file_name ?? `${mod.slug ?? mod.project_id}.jar`
             const dest = path.join(targetDir, fileName)
             if (!fs.existsSync(dest)) {
-              const writer = fs.createWriteStream(dest)
-              const resp = await axios({ url: mod.file_url, method: 'GET', responseType: 'stream' })
-              await new Promise<void>((res, rej) => {
-                resp.data.pipe(writer)
-                writer.on('finish', res)
-                writer.on('error', rej)
-              })
+              await downloadFile(mod.file_url, dest)
               downloaded.push(fileName)
             }
           }
@@ -686,6 +985,29 @@ export function registerHandlers(win: BrowserWindow): void {
       return { ok: false, canceled: false, error: err.message }
     }
   });
+
+  // Modrinth 표준 모드팩(.mrpack) 가져오기
+  ipcMain.handle('import-mrpack', async () => {
+    try {
+      const openResult = await dialog.showOpenDialog(win, {
+        title: 'Modrinth 모드팩(.mrpack) 가져오기',
+        filters: [
+          { name: 'Modrinth Modpack', extensions: ['mrpack'] },
+          { name: '모든 파일', extensions: ['*'] },
+        ],
+        properties: ['openFile'],
+      })
+      if (openResult.canceled || !openResult.filePaths[0]) {
+        return { ok: false, canceled: true }
+      }
+
+      return await importMrpackFromFile(openResult.filePaths[0], (p) =>
+        win.webContents.send('mrpack-progress', p)
+      )
+    } catch (err: any) {
+      return { ok: false, canceled: false, error: err.message }
+    }
+  })
 
   // 모드 삭제 (프로필에서 제거, 선택 시 파일까지 삭제)
   ipcMain.handle('uninstall-mod', async (_e, profileId: string, modId: string, opts: { deleteFile?: boolean } = {}) => {

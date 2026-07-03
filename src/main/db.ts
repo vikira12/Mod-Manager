@@ -69,10 +69,18 @@ export function migrate(): void {
           mod_version_id INTEGER REFERENCES mod_versions(id) ON DELETE CASCADE,
           depends_on_mod_id INTEGER REFERENCES mods(id) ON DELETE SET NULL,
           modrinth_dep_id TEXT,
+          -- 의존성이 특정 버전을 고정(pin)한 경우 해당 Modrinth 버전 ID
+          modrinth_dep_version_id TEXT,
           dep_type TEXT CHECK (dep_type IN ('required','optional','incompatible','embedded')),
           UNIQUE(mod_version_id, modrinth_dep_id, dep_type)
         )
       `).run()
+
+      // 기존 DB에는 modrinth_dep_version_id 컬럼이 없을 수 있음
+      const depCols = db.prepare(`PRAGMA table_info(mod_dependencies)`).all() as { name: string }[]
+      if (!depCols.some((col) => col.name === 'modrinth_dep_version_id')) {
+        db.prepare(`ALTER TABLE mod_dependencies ADD COLUMN modrinth_dep_version_id TEXT`).run()
+      }
 
       db.prepare(`
         CREATE TABLE IF NOT EXISTS profiles (
@@ -82,9 +90,16 @@ export function migrate(): void {
           game_version TEXT,
           loader TEXT,
           install_path TEXT,
+          is_active INTEGER DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `).run()
+
+      // 기존 DB에는 is_active 컬럼이 없을 수 있음
+      const profileCols = db.prepare(`PRAGMA table_info(profiles)`).all() as { name: string }[]
+      if (!profileCols.some((col) => col.name === 'is_active')) {
+        db.prepare(`ALTER TABLE profiles ADD COLUMN is_active INTEGER DEFAULT 0`).run()
+      }
 
       db.prepare(`
         CREATE TABLE IF NOT EXISTS profile_mods (
@@ -105,6 +120,14 @@ export function migrate(): void {
           errors TEXT,
           started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           finished_at DATETIME
+        )
+      `).run()
+
+      db.prepare(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `).run()
 
@@ -154,4 +177,18 @@ export function migrate(): void {
     console.error('[DB] 마이그레이션 실패:', err)
     throw err
   }
+}
+
+// 앱 전역 키-값 설정
+export function getSetting(key: string): string | null {
+  const row = db.prepare('SELECT value FROM app_settings WHERE key = ?').get(key) as { value?: string | null } | undefined
+  return row?.value ?? null
+}
+
+export function setSetting(key: string, value: string | null): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+  `).run(key, value)
 }

@@ -20,6 +20,13 @@ input, select, textarea, button {
   font-family: inherit;
 }
 
+/* body의 user-select:none이 입력창까지 상속되면 Chromium에서
+   클릭으로 캐럿이 잡히지 않아 입력이 불가능해진다 — 폼 요소는 항상 선택 가능하게 */
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 img {
   -webkit-user-drag: none;
 }

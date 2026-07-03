@@ -49,50 +49,56 @@ function encodePNG(size, rgba) {
 const clamp01 = (v) => Math.max(0, Math.min(1, v))
 const cov = (d) => clamp01(d + 0.5) // 1px 안티앨리어싱 커버리지
 
+// 라운드 사각형 커버리지 (중심 cx,cy / 반너비 hw,hh / 모서리 r)
+function roundRectCov(px, py, cx, cy, hw, hh, r) {
+  const qx = Math.abs(px - cx) - (hw - r)
+  const qy = Math.abs(py - cy) - (hh - r)
+  const outLen = Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
+  const sd = outLen + Math.min(Math.max(qx, qy), 0) - r
+  return cov(-sd)
+}
+
+// 사이드바 로고와 동일한 아이덴티티: 어두운 판 + 2x2 블록 (한 칸만 초록)
 function render(size) {
   const rgba = Buffer.alloc(size * size * 4)
   const S = size / 256
-  const cx = size / 2
-  const cy = size / 2
-  const inset = 10 * S
-  const radius = 58 * S
+  const c = size / 2
+
+  // 배경 판
+  const bgHalf = (256 / 2 - 8) * S
+  const bgRadius = 56 * S
+
+  // 2x2 블록 배치 (판 안쪽에 여백을 두고 배치)
+  const cell = 40 * S       // 블록 반너비
+  const gap = 9 * S         // 블록 사이 간격의 절반
+  const offset = cell + gap // 중심에서 각 블록 중심까지
+  const cellR = 12 * S
+  const blocks = [
+    { x: c - offset, y: c - offset, accent: false },
+    { x: c + offset, y: c - offset, accent: false },
+    { x: c - offset, y: c + offset, accent: false },
+    { x: c + offset, y: c + offset, accent: true },
+  ]
 
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const px = x + 0.5
       const py = y + 0.5
 
-      // 라운드 사각형 SDF
-      const hx = size / 2 - inset - radius
-      const hy = size / 2 - inset - radius
-      const qx = Math.abs(px - cx) - hx
-      const qy = Math.abs(py - cy) - hy
-      const outLen = Math.hypot(Math.max(qx, 0), Math.max(qy, 0))
-      const sdRect = outLen + Math.min(Math.max(qx, qy), 0) - radius
-      const baseA = cov(-sdRect)
+      const baseA = roundRectCov(px, py, c, c, bgHalf, bgHalf, bgRadius)
       if (baseA <= 0) continue
 
-      // 대각 그라데이션: 인디고(79,70,229) → 틸(20,184,166)
-      const t = clamp01((px + py) / (2 * size))
-      let r = 79 + (20 - 79) * t
-      let g = 70 + (184 - 70) * t
-      let b = 229 + (166 - 229) * t
+      // 배경: 플랫 다크
+      let r = 26, g = 26, b = 30
 
-      // 은은한 상단 하이라이트
-      const glow = clamp01(1 - (px + py) / size) * 0.10
-      r += (255 - r) * glow
-      g += (255 - g) * glow
-      b += (255 - b) * glow
-
-      // 다이아몬드 링 + 중앙 다이아몬드 (흰색 마크)
-      const d = Math.abs(px - cx) + Math.abs(py - cy)
-      const ringA = Math.min(cov(78 * S - d), cov(d - 56 * S))
-      const dotA = cov(26 * S - d)
-      const whiteA = Math.max(ringA, dotA) * 0.96
-
-      r += (255 - r) * whiteA
-      g += (255 - g) * whiteA
-      b += (255 - b) * whiteA
+      for (const block of blocks) {
+        const a = roundRectCov(px, py, block.x, block.y, cell, cell, cellR)
+        if (a <= 0) continue
+        const [br, bg2, bb] = block.accent ? [63, 207, 110] : [217, 217, 222]
+        r += (br - r) * a
+        g += (bg2 - g) * a
+        b += (bb - b) * a
+      }
 
       const i = (y * size + x) * 4
       rgba[i] = Math.round(r)

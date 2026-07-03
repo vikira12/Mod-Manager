@@ -2,11 +2,12 @@
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>Electron</title>
+    <title>ModForge</title>
     <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <!-- img-src https: 모드 아이콘(cdn.modrinth.com 등)을 표시하기 위해 필요 -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:"
     />
   </head>
 

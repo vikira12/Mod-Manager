@@ -29,8 +29,8 @@ const GAME_FILES_PHASE_LABEL: Record<string, string> = {
 
 // 게임 로그 줄 색상 (에러/경고 강조)
 function logLineColor(line: string): string {
-  if (/ERROR|SEVERE|FATAL|Exception|Caused by/i.test(line)) return '#f87171'
-  if (/WARN/i.test(line)) return '#fbbf24'
+  if (/ERROR|SEVERE|FATAL|Exception|Caused by/i.test(line)) return '#e0565b'
+  if (/WARN/i.test(line)) return '#d9a53f'
   return '#9ca3af'
 }
 
@@ -132,6 +132,10 @@ export default function App() {
   const api = window.electron
   const activeDetail = detailMod ?? detailFallback
   const updateCount = Object.values(updates).filter(u => u.update_available).length
+  // 설치 구성 화면에서 "이미 설치됨" 표시와 실제 설치 개수 계산에 사용
+  const installedModIds = new Set(installedMods.map((m) => m.modrinth_id))
+  const selectedNewCount = depResults.filter(m => selected.has(m.modrinth_id) && !installedModIds.has(m.modrinth_id)).length
+  const selectedInstalledCount = depResults.filter(m => selected.has(m.modrinth_id) && installedModIds.has(m.modrinth_id)).length
   const lastSyncLog = dbStatus?.logs?.[0]
   const syncPct = syncProgress && syncProgress.total > 0
     ? Math.min(100, Math.round((syncProgress.synced / syncProgress.total) * 100))
@@ -201,10 +205,10 @@ export default function App() {
       setRunningPid(null)
       setRunningProfileId(null)
       if (data.crashed) {
-        setLaunchStatus(`게임이 비정상 종료되었습니다 (코드 ${data.code ?? '알 수 없음'}).`)
+        setLaunchStatus(`게임 비정상 종료 (코드 ${data.code ?? '?'})`)
         setCrashInfo({ path: data.crashReportPath, summary: data.crashSummary })
       } else {
-        setLaunchStatus(`게임이 종료되었습니다 (코드 ${data.code ?? '0'}).`)
+        setLaunchStatus('게임 종료됨')
         setCrashInfo(null)
       }
     })
@@ -337,10 +341,10 @@ export default function App() {
         setActivateStatus(res.error ?? '프로필 연결에 실패했습니다.')
         return
       }
-      const parts = [`${p.name} 프로필을 게임 mods 폴더에 연결했습니다.`]
-      if (res.adoptedFiles) parts.push(`기존 파일 ${res.adoptedFiles}개를 프로필 보관소로 가져왔습니다.`)
-      if (res.backupPath) parts.push('기존 mods 폴더는 백업으로 보존했습니다.')
-      setActivateStatus(parts.join(' '))
+      const parts = [`"${p.name}" 연결됨`]
+      if (res.adoptedFiles) parts.push(`기존 파일 ${res.adoptedFiles}개 가져옴`)
+      if (res.backupPath) parts.push('원본 백업됨')
+      setActivateStatus(parts.join(' · '))
 
       const list = await api.getProfiles()
       setProfiles(list)
@@ -362,7 +366,7 @@ export default function App() {
         setActivateStatus(res.error ?? '연결 해제에 실패했습니다.')
         return
       }
-      setActivateStatus('게임 mods 폴더 연결을 해제했습니다.')
+      setActivateStatus('연결 해제됨')
       const list = await api.getProfiles()
       setProfiles(list)
     } catch (err: any) {
@@ -485,14 +489,13 @@ export default function App() {
         setPrepStatus(res.error ?? '게임 파일 준비에 실패했습니다.')
         return
       }
-      const parts = [`게임 파일 준비 완료 (버전 ${res.versionId}).`]
-      if (res.loaderInstalled) parts.push('로더를 새로 설치했습니다.')
-      if (res.clientDownloaded) parts.push('클라이언트를 내려받았습니다.')
-      parts.push(`라이브러리 ${res.librariesDownloaded ?? 0}개 다운로드 (전체 ${res.librariesTotal ?? 0}개).`)
-      parts.push(`에셋 ${res.assetsDownloaded ?? 0}개 다운로드 (전체 ${res.assetsTotal ?? 0}개).`)
-      if (res.librariesMissing) parts.push(`주의: 라이브러리 ${res.librariesMissing}개를 확보하지 못했습니다.`)
-      if (res.assetsFailed) parts.push(`주의: 에셋 ${res.assetsFailed}개 실패.`)
-      setPrepStatus(parts.join(' '))
+      const parts = [`게임 파일 준비 완료 · ${res.versionId}`]
+      if (res.librariesDownloaded || res.assetsDownloaded) {
+        parts.push(`라이브러리 ${res.librariesDownloaded ?? 0}개 · 에셋 ${res.assetsDownloaded ?? 0}개 다운로드`)
+      }
+      if (res.librariesMissing) parts.push(`라이브러리 ${res.librariesMissing}개 누락`)
+      if (res.assetsFailed) parts.push(`에셋 ${res.assetsFailed}개 실패`)
+      setPrepStatus(parts.join(' · '))
     } catch (e: any) {
       setPrepStatus(e.message)
     } finally {
@@ -510,13 +513,13 @@ export default function App() {
       return
     }
     const parts: string[] = []
-    if (res.loaderInstalled) parts.push(`${p.loader} 로더(${res.versionId})를 새로 설치했습니다.`)
+    if (res.loaderInstalled) parts.push(`${p.loader} 로더 설치됨`)
     parts.push(
       res.launcherOpened
-        ? `공식 런처를 실행했습니다. "${res.registeredName}" 프로필로 바로 플레이하세요.`
-        : (res.warning ?? '런처를 자동으로 열지 못했습니다. 직접 실행해 주세요.')
+        ? '공식 런처에 등록했습니다. PLAY를 누르면 시작됩니다.'
+        : (res.warning ?? '런처를 열지 못했습니다. 직접 실행해 주세요.')
     )
-    setLaunchStatus(parts.join(' '))
+    setLaunchStatus(parts.join(' · '))
   }
 
   // 프로필 실행: 로그인 상태면 자체 실행, 아니면 공식 런처 위임
@@ -535,7 +538,7 @@ export default function App() {
           setCrashInfo(null)
           setRunningPid(res.pid ?? null)
           setRunningProfileId(p.id)
-          setLaunchStatus(`게임을 실행했습니다 (버전 ${res.versionId}, Java ${res.javaMajor ?? '?'}, PID ${res.pid})${res.offline ? ' — 오프라인 모드' : ''}.`)
+          setLaunchStatus(`실행됨 · ${res.versionId}${res.offline ? ' · 오프라인' : ''}`)
         } else if (res.needsLogin) {
           setLaunchStatus(res.error ?? '로그인이 필요합니다.')
           return
@@ -545,7 +548,7 @@ export default function App() {
           return
         } else {
           // 자체 실행 실패 → 공식 런처로 폴백
-          setLaunchStatus(`자체 실행 실패(${res.error ?? '알 수 없는 오류'}) — 공식 런처로 대신 실행합니다.`)
+          setLaunchStatus(`직접 실행 실패: ${res.error ?? '알 수 없는 오류'} → 공식 런처로 전환`)
           await launchViaOfficialLauncher(p)
         }
       } else {
@@ -647,12 +650,11 @@ export default function App() {
         return
       }
 
-      const parts = [`"${res.profileName}" 프로필을 만들고 파일 ${res.downloaded ?? 0}/${res.totalFiles ?? 0}개를 내려받았습니다.`]
-      if (res.registered) parts.push(`모드 정보 ${res.registered}개 등록.`)
-      if (res.overrides) parts.push(`설정 파일 ${res.overrides}개 적용.`)
+      const parts = [`"${res.profileName}" 생성 · 파일 ${res.downloaded ?? 0}/${res.totalFiles ?? 0}`]
+      if (res.registered) parts.push(`모드 ${res.registered}개 등록`)
+      if (res.overrides) parts.push(`설정 ${res.overrides}개`)
       if (res.failed?.length) parts.push(`${res.failed.length}개 실패: ${res.failed[0].reason}`)
-      parts.push('프로필을 "게임에 연결"하거나 "실행"하면 플레이 준비 완료입니다.')
-      setImportStatus(parts.join(' '))
+      setImportStatus(parts.join(' · '))
 
       const list = await api.getProfiles()
       setProfiles(list)
@@ -784,14 +786,14 @@ export default function App() {
       }
 
       const parts: string[] = []
-      if (res.applied.length) parts.push(`${res.applied.length}개 모드를 업데이트했습니다.`)
+      if (res.applied.length) parts.push(`${res.applied.length}개 업데이트 완료`)
       if (res.failed.length) parts.push(`${res.failed.length}개 실패: ${res.failed[0].reason}`)
       if (!res.applied.length && !res.failed.length) parts.push('적용할 업데이트가 없습니다.')
       if (res.backupPath) {
         setLastBackupPath(res.backupPath)
-        parts.push('적용 전 백업을 만들었습니다.')
+        parts.push('백업 생성됨')
       }
-      setUpdateStatus(parts.join(' '))
+      setUpdateStatus(parts.join(' · '))
 
       // 적용된 모드의 배지를 API 재조회 없이 로컬에서 최신 상태로 갱신
       setUpdates(prev => {
@@ -975,10 +977,10 @@ export default function App() {
       <aside style={s.sidebar}>
         <div style={s.logo}>
           <div style={s.logoMark}>
-            <div style={s.logoCube}>
-              <span style={s.logoCubeTop} />
-              <span style={s.logoCubeSide} />
-            </div>
+            <span style={s.logoCell} />
+            <span style={s.logoCell} />
+            <span style={s.logoCell} />
+            <span style={s.logoCellAccent} />
           </div>
           <span style={s.logoText}>ModForge</span>
         </div>
@@ -1087,10 +1089,10 @@ export default function App() {
           ) : authInfo?.offlineEnabled ? (
             <>
               <div style={s.accountRow}>
-                <span style={{ ...s.accountDot, background: '#fbbf24', boxShadow: '0 0 8px rgba(251,191,36,0.5)' }} />
+                <span style={{ ...s.accountDot, background: C.warn }} />
                 <span style={s.accountName}>오프라인 · {authInfo.offlineUsername}</span>
               </div>
-              <div style={s.accountHint}>싱글플레이 전용입니다. 온라인 서버는 로그인이 필요합니다.</div>
+              <div style={s.accountHint}>싱글플레이 전용</div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <button style={{ ...s.linkBtn, flex: 1 }} onClick={handleLogin} disabled={authBusy}>
                   {authBusy ? '로그인 중...' : '로그인'}
@@ -1127,7 +1129,7 @@ export default function App() {
           <div style={s.page}>
             <div style={s.pageHead}>
               <h1 style={s.pageTitle}>모드 검색</h1>
-              <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name} (${activeProfile.loader} ${activeProfile.game_version}) 프로필 기준` : '프로필을 먼저 생성해 주세요'}</p>
+              <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name} · ${activeProfile.loader} ${activeProfile.game_version}` : '프로필을 먼저 생성해 주세요'}</p>
             </div>
 
             <div style={s.searchRow}>
@@ -1150,7 +1152,7 @@ export default function App() {
             {scannedJars.length > 0 && (
               <div className="banner" style={s.scanBanner}>
                 <Icon.Package />
-                <span>mods 폴더 jar {scannedJars.length}개를 함께 검사 중입니다.</span>
+                <span>수동 설치 jar {scannedJars.length}개 포함 검사 중</span>
               </div>
             )}
             {conflictDetails.length > 0 && <ConflictPanel conflicts={conflictDetails} />}
@@ -1161,7 +1163,7 @@ export default function App() {
                 <p style={s.label}>검색 결과</p>
                 <div style={s.depList}>
                   {searchResults.map(mod => (
-                    <ModCard key={mod.modrinth_id} mod={mod} required={false} checked={false} onToggle={() => openModDetail(mod, 'search')} isSelectableResult={true} />
+                    <ModCard key={mod.modrinth_id} mod={mod} required={false} checked={false} onToggle={() => openModDetail(mod, 'search')} isSelectableResult={true} installed={installedModIds.has(mod.modrinth_id)} />
                   ))}
                 </div>
               </>
@@ -1175,7 +1177,7 @@ export default function App() {
                 </div>
 
                 <div style={{ marginBottom: 20 }}>
-                  <ModCard mod={depResults[0]} required checked onToggle={() => {}} />
+                  <ModCard mod={depResults[0]} required checked onToggle={() => {}} installed={installedModIds.has(depResults[0].modrinth_id)} />
                 </div>
 
                 {depResults.length > 1 ? (
@@ -1185,7 +1187,7 @@ export default function App() {
                       {depResults.slice(1).map(mod => {
                         const isReq = mod.dep_type === 'required' || !mod.dep_type
                         return (
-                          <ModCard key={mod.modrinth_id} mod={mod} required={isReq} checked={selected.has(mod.modrinth_id)} onToggle={() => toggleMod(mod.modrinth_id, isReq)} />
+                          <ModCard key={mod.modrinth_id} mod={mod} required={isReq} checked={selected.has(mod.modrinth_id)} onToggle={() => toggleMod(mod.modrinth_id, isReq)} installed={installedModIds.has(mod.modrinth_id)} />
                         )
                       })}
                     </div>
@@ -1202,8 +1204,10 @@ export default function App() {
                     {installStatus === 'installing' && <span style={s.mutedTxt}>설치 중...</span>}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    <span style={s.mutedTxt}>{selected.size}개 선택됨</span>
-                    <button style={s.installBtn} onClick={handleInstall} disabled={installStatus === 'installing' || selected.size === 0 || hasBlockingConflict}>
+                    <span style={s.mutedTxt}>
+                      새로 설치 {selectedNewCount}개{selectedInstalledCount > 0 ? ` · 이미 설치됨 ${selectedInstalledCount}개` : ''}
+                    </span>
+                    <button style={s.installBtn} onClick={handleInstall} disabled={installStatus === 'installing' || selectedNewCount === 0 || hasBlockingConflict}>
                       <Icon.Download /> {installStatus === 'installing' ? '설치 중...' : '프로필에 설치'}
                     </button>
                   </div>
@@ -1222,7 +1226,7 @@ export default function App() {
               ) : (
                 <>
                   <div style={s.detailHero}>
-                    <ModIcon src={activeDetail?.icon_url} alt={activeDetail?.name ?? 'mod'} />
+                    <ModIcon src={activeDetail?.icon_url} alt={activeDetail?.name ?? 'mod'} size={64} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <h1 style={s.pageTitle}>{activeDetail?.name}</h1>
                       <p style={s.pageDesc}>{activeDetail?.description ?? '설명이 없습니다.'}</p>
@@ -1258,7 +1262,7 @@ export default function App() {
                       <p style={s.label}>의존성 미리보기</p>
                       <div style={s.depList}>
                         {detailMod.dependencies.slice(0, 4).map(dep => (
-                          <ModCard key={`${dep.modrinth_id}-${dep.dep_type}`} mod={dep} required={dep.dep_type === 'required'} checked={false} onToggle={() => {}} />
+                          <ModCard key={`${dep.modrinth_id}-${dep.dep_type}`} mod={dep} required={dep.dep_type === 'required'} checked={false} onToggle={() => {}} installed={installedModIds.has(dep.modrinth_id)} />
                         ))}
                       </div>
                     </>
@@ -1278,7 +1282,7 @@ export default function App() {
                         {depResults.map((mod, index) => {
                           const isReq = index === 0 || mod.dep_type === 'required' || !mod.dep_type
                           return (
-                            <ModCard key={mod.modrinth_id} mod={mod} required={isReq} checked={selected.has(mod.modrinth_id)} onToggle={() => toggleMod(mod.modrinth_id, isReq)} />
+                            <ModCard key={mod.modrinth_id} mod={mod} required={isReq} checked={selected.has(mod.modrinth_id)} onToggle={() => toggleMod(mod.modrinth_id, isReq)} installed={installedModIds.has(mod.modrinth_id)} />
                           )
                         })}
                       </div>
@@ -1289,8 +1293,10 @@ export default function App() {
                           {installStatus === 'installing' && <span style={s.mutedTxt}>설치 중...</span>}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                          <span style={s.mutedTxt}>{selected.size}개 선택됨</span>
-                          <button style={s.installBtn} onClick={handleInstall} disabled={installStatus === 'installing' || selected.size === 0 || hasBlockingConflict}>
+                          <span style={s.mutedTxt}>
+                            새로 설치 {selectedNewCount}개{selectedInstalledCount > 0 ? ` · 이미 설치됨 ${selectedInstalledCount}개` : ''}
+                          </span>
+                          <button style={s.installBtn} onClick={handleInstall} disabled={installStatus === 'installing' || selectedNewCount === 0 || hasBlockingConflict}>
                             <Icon.Download /> {installStatus === 'installing' ? '설치 중...' : '프로필에 설치'}
                           </button>
                         </div>
@@ -1306,26 +1312,20 @@ export default function App() {
         {/* 2. 추천 모드 페이지 */}
         {page === 'recommended' && (
           <div style={s.page}>
-            <div style={s.pageHead}>
-              <h1 style={s.pageTitle}>추천 모드</h1>
-              <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name}에 설치된 모드 성향을 기준으로 골랐습니다.` : '프로필을 먼저 선택해 주세요'}</p>
-            </div>
-
-            {error && <div className="banner" style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
-
-            <div style={s.recommendHero}>
+            <div style={s.pageHeadRow}>
               <div>
-                <div style={s.heroKicker}><Icon.Sparkles /> Profile Match</div>
-                <div style={s.heroTitle}>지금 구성과 잘 맞는 다음 모드</div>
-                <div style={s.heroSub}>카테고리, 로더, 게임 버전, 다운로드 지표를 함께 봅니다.</div>
+                <h1 style={s.pageTitle}>추천 모드</h1>
+                <p style={s.pageDesc}>{activeProfile ? '설치된 모드 성향 기준' : '프로필을 먼저 선택해 주세요'}</p>
               </div>
-              <button style={s.ghostBtn} onClick={loadRecommendations} disabled={isLoadingRecs}>
+              <button style={s.ghostBtnTall} onClick={loadRecommendations} disabled={isLoadingRecs}>
                 {isLoadingRecs ? '분석 중...' : '다시 추천'}
               </button>
             </div>
 
+            {error && <div className="banner" style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+
             {isLoadingRecs ? (
-              <p style={s.mutedTxt}>설치된 모드 구성을 분석하고 있습니다...</p>
+              <p style={s.mutedTxt}>설치된 모드 구성을 분석하는 중...</p>
             ) : recommendedMods.length === 0 ? (
               <div style={s.empty}>
                 <Icon.Sparkles />
@@ -1366,7 +1366,7 @@ export default function App() {
             <div style={s.pageHeadRow}>
               <div>
                 <h1 style={s.pageTitle}>설치된 모드</h1>
-                <p style={s.pageDesc}>{activeProfile?.name} 프로필에 설치된 모드 목록입니다.</p>
+                <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name} · ${installedMods.length}개` : '프로필을 먼저 선택해 주세요'}</p>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 <button style={s.ghostBtnTall} onClick={handleCheckUpdates} disabled={!activeProfile || isCheckingUpdates || isApplyingUpdates}>
@@ -1394,16 +1394,19 @@ export default function App() {
               ) : (
                 installedMods.map(mod => (
                   <div key={mod.id} className="card" style={s.installedItem}>
-                    <div style={{flex: 1, cursor: 'pointer'}} onClick={() => openModDetail(mod, 'installed')}>
-                      <div style={s.modName}>
-                        {mod.name} <span style={s.verTag}>v{mod.version_number}</span>
-                        {updates[mod.modrinth_id]?.update_available && <span style={s.updateBadge}>업데이트 있음</span>}
-                        {updates[mod.modrinth_id]?.status === 'up_to_date' && <span style={s.okBadge}>최신</span>}
+                    <div style={{ flex: 1, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }} onClick={() => openModDetail(mod, 'installed')}>
+                      <ModIcon src={mod.icon_url} alt={mod.name} size={38} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={s.modName}>
+                          {mod.name} <span style={s.verTag}>v{mod.version_number}</span>
+                          {updates[mod.modrinth_id]?.update_available && <span style={s.updateBadge}>업데이트 있음</span>}
+                          {updates[mod.modrinth_id]?.status === 'up_to_date' && <span style={s.okBadge}>최신</span>}
+                        </div>
+                        {updates[mod.modrinth_id]?.update_available && (
+                          <div style={{ fontSize: 12, color: C.sub }}>최신 버전: v{updates[mod.modrinth_id].latest_version_number}</div>
+                        )}
+                        <div style={{ fontSize: 12, color: C.mute }}>설치일: {formatDbDate(mod.installed_at, true)}</div>
                       </div>
-                      {updates[mod.modrinth_id]?.update_available && (
-                        <div style={{fontSize: 12, color: '#c7d2fe'}}>최신 버전: v{updates[mod.modrinth_id].latest_version_number}</div>
-                      )}
-                      <div style={{fontSize: 12, color: '#71717a'}}>설치일: {formatDbDate(mod.installed_at, true)}</div>
                     </div>
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       {updates[mod.modrinth_id]?.update_available && (
@@ -1467,7 +1470,7 @@ export default function App() {
               <div className="banner" style={s.crashBanner}>
                 <div style={s.crashTitle}><Icon.Alert /> 게임 크래시 감지</div>
                 <div style={s.crashSummary}>
-                  {crashInfo.summary ?? '크래시 원인 요약을 찾지 못했습니다. 아래 게임 로그의 빨간 줄을 확인해 보세요.'}
+                  {crashInfo.summary ?? '원인 요약 없음 — 게임 로그의 빨간 줄을 확인하세요.'}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
                   {crashInfo.path && (
@@ -1607,7 +1610,7 @@ export default function App() {
           <div style={s.page}>
             <div style={s.pageHead}>
               <h1 style={s.pageTitle}>데이터베이스</h1>
-              <p style={s.pageDesc}>Modrinth 인기 모드를 로컬 DB에 캐시해 오프라인 검색과 빠른 의존성 분석을 가능하게 합니다.</p>
+              <p style={s.pageDesc}>인기 모드를 로컬에 캐시해 검색과 의존성 분석을 빠르게 합니다.</p>
             </div>
 
             {syncMessage && <div className="banner" style={s.scanBanner}><Icon.Check /><span>{syncMessage}</span></div>}
@@ -1660,7 +1663,7 @@ export default function App() {
             <div style={{ ...s.settingsPanel, alignItems: 'flex-start' }}>
               <div style={{ flex: 1 }}>
                 <p style={{ ...s.label, marginBottom: 6 }}>
-                  Java 최대 메모리 — <span style={{ color: '#a5b4fc' }}>{(memoryMb / 1024).toFixed(1)}GB</span>
+                  Java 최대 메모리 — <span style={{ color: C.accent }}>{(memoryMb / 1024).toFixed(1)}GB</span>
                   {totalMemoryMb ? ` · 시스템 ${Math.round(totalMemoryMb / 1024)}GB` : ''}
                 </p>
                 {(() => {
@@ -1686,7 +1689,7 @@ export default function App() {
                     (!totalMemoryMb || preset <= totalMemoryMb * 0.75) && (
                       <button
                         key={preset}
-                        style={{ ...s.chip, cursor: 'pointer', border: memoryMb === preset ? '1px solid #6366f1' : '1px solid transparent' }}
+                        style={{ ...s.chip, cursor: 'pointer', border: memoryMb === preset ? '1px solid #3a5c46' : '1px solid transparent', color: memoryMb === preset ? C.accent : C.sub }}
                         onClick={() => handleMemoryChange(preset)}
                         disabled={runningPid != null}
                       >
@@ -1720,7 +1723,7 @@ export default function App() {
                     <span style={{ fontWeight: 'bold' }}>{log.mods_synced}개 동기화</span>
                     <span style={s.mutedTxt}>{formatDbDate(log.started_at)}</span>
                     {log.errors && (
-                      <span style={{ ...s.mutedTxt, color: '#f87171', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={log.errors}>
+                      <span style={{ ...s.mutedTxt, color: C.danger, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={log.errors}>
                         {log.errors.slice(0, 80)}
                       </span>
                     )}
@@ -1737,8 +1740,8 @@ export default function App() {
 }
 
 // --- 예쁜 체크박스가 달린 ModCard 컴포넌트 복구 ---
-function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
-  mod: ModRow; required: boolean; checked: boolean; onToggle: () => void; isSelectableResult?: boolean
+function ModCard({ mod, required, checked, onToggle, isSelectableResult, installed }: {
+  mod: ModRow; required: boolean; checked: boolean; onToggle: () => void; isSelectableResult?: boolean; installed?: boolean
 }) {
   return (
     <div onClick={() => (!required || isSelectableResult) && onToggle()}
@@ -1748,7 +1751,8 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
         {!isSelectableResult && (
           <div style={{ ...s.checkbox, ...(checked ? s.checkboxOn : {}) }}>{checked && <Icon.Check />}</div>
         )}
-        <div>
+        <ModIcon src={mod.icon_url} alt={mod.name} size={38} />
+        <div style={{ minWidth: 0 }}>
           <div style={s.modName}>{mod.name}</div>
           {mod.description && <div style={s.modDesc}>{mod.description.slice(0, 80)}...</div>}
           <div style={s.modMeta}>
@@ -1758,15 +1762,19 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
           </div>
         </div>
       </div>
-      {isSelectableResult ? <span style={s.optBadge}>선택하기</span> : <span style={required ? s.reqBadge : s.optBadge}>{required ? '필수' : '선택'}</span>}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+        {installed && <span style={s.installedBadge}>설치됨</span>}
+        {isSelectableResult ? <span style={s.optBadge}>선택하기</span> : <span style={required ? s.reqBadge : s.optBadge}>{required ? '필수' : '선택'}</span>}
+      </div>
     </div>
   )
 }
 
-function ModIcon({ src, alt }: { src?: string | null; alt: string }) {
+function ModIcon({ src, alt, size = 40 }: { src?: string | null; alt: string; size?: number }) {
   const [failed, setFailed] = useState(false)
-  if (!src || failed) return <div style={s.modIconFallback}><Icon.Package /></div>
-  return <img src={src} alt={alt} style={s.modIcon} onError={() => setFailed(true)} referrerPolicy="no-referrer" />
+  const dim = { width: size, height: size }
+  if (!src || failed) return <div style={{ ...s.modIconFallback, ...dim }}><Icon.Package /></div>
+  return <img src={src} alt={alt} style={{ ...s.modIcon, ...dim }} onError={() => setFailed(true)} referrerPolicy="no-referrer" loading="lazy" />
 }
 
 function PinWarningPanel({ warnings }: { warnings: string[] }) {
@@ -1776,7 +1784,7 @@ function PinWarningPanel({ warnings }: { warnings: string[] }) {
       {warnings.map((warning) => (
         <div key={warning} style={s.pinWarnItem}>{warning}</div>
       ))}
-      <div style={s.pinWarnHint}>보통은 선택된 버전으로 정상 작동하지만, 게임 실행 시 문제가 생기면 이 모드들을 확인해 보세요.</div>
+      <div style={s.pinWarnHint}>문제가 생기면 이 모드들의 버전을 확인해 보세요.</div>
     </div>
   )
 }
@@ -1818,146 +1826,155 @@ function toStringArray(value: unknown): string[] {
 }
 
 // --- Styles ---
+// 디자인 토큰: 무채색 기반 + 초록 포인트 하나 (실행/성공 계열에만 사용)
+const C = {
+  bg: '#131316',
+  side: '#161619',
+  surface: '#1a1a1e',
+  surface2: '#212127',
+  border: '#26262b',
+  text: '#ececee',
+  soft: '#c9c9cf',
+  sub: '#9a9aa3',
+  mute: '#6e6e78',
+  accent: '#3fcf6e',
+  accentText: '#0b2814',
+  danger: '#e0565b',
+  warn: '#d9a53f',
+}
+
 const s: Record<string, React.CSSProperties> = {
-  root: { display: 'flex', height: '100vh', background: 'radial-gradient(circle at top left, #1d2433 0, #0f0f11 38%, #0a0a0b 100%)', color: '#e8e8ea', fontFamily: "'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif" },
-  sidebar: { width: 230, background: 'rgba(16, 16, 19, 0.92)', borderRight: '1px solid #2a2a2e', padding: '20px 12px', display: 'flex', flexDirection: 'column', boxShadow: '12px 0 40px rgba(0,0,0,0.22)' },
-  logo: { display: 'flex', alignItems: 'center', gap: 11, padding: '0 10px 22px' },
-  logoMark: { width: 34, height: 34, background: 'linear-gradient(135deg, #4f46e5, #14b8a6)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 12px 28px rgba(20,184,166,0.20), inset 0 1px 0 rgba(255,255,255,0.20)' },
-  logoCube: { position: 'relative', width: 18, height: 18, border: '2px solid rgba(255,255,255,0.92)', borderRadius: 3, transform: 'rotate(45deg)', boxSizing: 'border-box' },
-  logoCubeTop: { position: 'absolute', left: 2, top: 2, width: 5, height: 5, background: 'rgba(255,255,255,0.88)', borderRadius: 1 },
-  logoCubeSide: { position: 'absolute', right: 2, bottom: 2, width: 5, height: 5, background: 'rgba(15,23,42,0.72)', borderRadius: 1 },
-  logoText: { fontWeight: 'bold', fontSize: 17, letterSpacing: 0 },
-  
-  profileBlock: { background: 'linear-gradient(180deg, #202127, #18181b)', padding: 12, borderRadius: 8, marginBottom: 20, border: '1px solid #2d2d34' },
-  profileSelect: { width: '100%', background: '#101014', color: '#fff', border: '1px solid #3f3f46', borderRadius: 6, padding: 7, marginBottom: 8, outline: 'none' },
-  nav: { flex: 1, display: 'flex', flexDirection: 'column', gap: 4 },
-  navBtn: { background: 'transparent', border: '1px solid transparent', color: '#8b8b95', padding: '10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 },
-  navActive: { background: '#27272a', color: '#fff', borderColor: '#353541' },
+  root: { display: 'flex', height: '100vh', background: C.bg, color: C.text, fontFamily: "'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif" },
+  sidebar: { width: 224, background: C.side, borderRight: `1px solid ${C.border}`, padding: '18px 12px', display: 'flex', flexDirection: 'column' },
+  logo: { display: 'flex', alignItems: 'center', gap: 10, padding: '2px 8px 18px' },
+  logoMark: { width: 28, height: 28, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 3, padding: 5, background: C.surface2, borderRadius: 7, boxSizing: 'border-box' },
+  logoCell: { background: '#d9d9de', borderRadius: 2 },
+  logoCellAccent: { background: C.accent, borderRadius: 2 },
+  logoText: { fontWeight: 700, fontSize: 15 },
+
+  profileBlock: { background: C.surface, padding: 12, borderRadius: 10, marginBottom: 16, border: `1px solid ${C.border}` },
+  profileSelect: { width: '100%', background: C.bg, color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, padding: 7, marginBottom: 8, outline: 'none', fontSize: 13 },
+  nav: { flex: 1, display: 'flex', flexDirection: 'column', gap: 2 },
+  navBtn: { background: 'transparent', border: 'none', color: C.sub, padding: '9px 10px', borderRadius: 8, textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 },
+  navActive: { background: C.surface2, color: C.text },
 
   main: { flex: 1, overflowY: 'auto' },
-  page: { maxWidth: 900, margin: '0 auto', padding: 40 },
-  pageHead: { marginBottom: 30 },
-  pageHeadRow: { marginBottom: 24, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
-  pageTitle: { fontSize: 24, fontWeight: 'bold', margin: 0 },
-  pageDesc: { color: '#71717a', marginTop: 5, fontSize: 14 },
+  page: { maxWidth: 860, margin: '0 auto', padding: '36px 40px' },
+  pageHead: { marginBottom: 24 },
+  pageHeadRow: { marginBottom: 20, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 },
+  pageTitle: { fontSize: 21, fontWeight: 700, margin: 0 },
+  pageDesc: { color: C.mute, marginTop: 4, fontSize: 13 },
 
-  searchRow: { display: 'flex', gap: 10, marginBottom: 20 },
-  searchBox: { flex: 1, background: 'rgba(24,24,27,0.86)', border: '1px solid #2f3037', borderRadius: 8, padding: '0 15px', display: 'flex', alignItems: 'center', gap: 10 },
-  searchInput: { background: 'transparent', border: 'none', color: '#fff', width: '100%', padding: '12px 0', outline: 'none' },
-  primaryBtn: { background: '#6366f1', color: '#fff', border: 'none', padding: '0 20px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 10px 24px rgba(79,70,229,0.22)' },
-  primaryBtnTall: { background: '#6366f1', color: '#fff', border: 'none', padding: '10px 16px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 10px 24px rgba(79,70,229,0.22)', display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' },
-  ghostBtn: { background: 'transparent', border: '1px solid #2a2a2e', color: '#a1a1aa', padding: '8px 15px', borderRadius: 8, cursor: 'pointer' },
-  ghostBtnTall: { background: 'rgba(24,24,27,0.72)', border: '1px solid #34343b', color: '#d4d4d8', padding: '10px 14px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' },
-  backBtn: { background: 'transparent', border: 'none', color: '#a1a1aa', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: 0 },
-  detailHead: { display: 'flex', flexDirection: 'column', gap: 16 },
-  detailHero: { display: 'flex', gap: 16, alignItems: 'flex-start', background: 'linear-gradient(135deg, rgba(31,41,55,0.94), rgba(24,24,27,0.92))', border: '1px solid #30323b', borderRadius: 8, padding: 18, boxShadow: '0 18px 40px rgba(0,0,0,0.20)' },
-  detailMetaRow: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 12 },
-  detailGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 },
-  detailPanel: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 14 },
-  detailValue: { color: '#f4f4f5', fontSize: 16, fontWeight: 'bold' },
-  detailSmall: { color: '#71717a', fontSize: 12, marginTop: 5 },
+  searchRow: { display: 'flex', gap: 8, marginBottom: 18 },
+  searchBox: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: '0 14px', display: 'flex', alignItems: 'center', gap: 10, color: C.mute },
+  searchInput: { background: 'transparent', border: 'none', color: C.text, width: '100%', padding: '11px 0', outline: 'none', fontSize: 14 },
+  primaryBtn: { background: C.text, color: C.bg, border: 'none', padding: '0 18px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13 },
+  primaryBtnTall: { background: C.text, color: C.bg, border: 'none', padding: '9px 14px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap' },
+  ghostBtn: { background: 'transparent', border: `1px solid ${C.border}`, color: C.sub, padding: '7px 13px', borderRadius: 8, cursor: 'pointer', fontSize: 12 },
+  ghostBtnTall: { background: 'transparent', border: `1px solid ${C.border}`, color: C.soft, padding: '9px 13px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, whiteSpace: 'nowrap', fontSize: 13 },
+  backBtn: { background: 'transparent', border: 'none', color: C.sub, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5, padding: 0, fontSize: 13 },
+  detailHead: { display: 'flex', flexDirection: 'column', gap: 14 },
+  detailHero: { display: 'flex', gap: 14, alignItems: 'flex-start', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 16 },
+  detailMetaRow: { display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 },
+  detailGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 },
+  detailPanel: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 13 },
+  detailValue: { color: C.text, fontSize: 15, fontWeight: 700 },
+  detailSmall: { color: C.mute, fontSize: 12, marginTop: 4 },
   tagWrap: { display: 'flex', gap: 6, flexWrap: 'wrap' },
-  settingsPanel: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 14, marginBottom: 18, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
-  pathText: { color: '#d4d4d8', fontSize: 13, overflowWrap: 'anywhere' },
+  settingsPanel: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 13, marginBottom: 16 },
+  pathText: { color: C.soft, fontSize: 12.5, overflowWrap: 'anywhere' },
 
-  errorBanner: { background: '#1c0a0a', border: '1px solid #3f1515', color: '#f87171', padding: '10px 15px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15, fontSize: 13 },
-  scanBanner: { background: '#111827', border: '1px solid #263247', color: '#9ca3af', padding: '9px 14px', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 10, marginBottom: 15, fontSize: 12 },
-  conflictPanel: { border: '1px solid #3f1515', background: '#140909', borderRadius: 8, padding: 12, marginBottom: 15 },
-  conflictTitle: { color: '#fecaca', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 },
-  conflictItem: { borderTop: '1px solid #2f1717', paddingTop: 10, marginTop: 10 },
-  conflictTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
-  conflictNames: { color: '#f4f4f5', fontWeight: 'bold', fontSize: 13 },
-  conflictReason: { color: '#d4d4d8', fontSize: 12, lineHeight: 1.45 },
-  conflictSource: { color: '#71717a', fontSize: 11, marginTop: 6 },
-  blockerBadge: { fontSize: 11, color: '#fee2e2', background: '#7f1d1d', padding: '2px 7px', borderRadius: 4 },
-  warnBadge: { fontSize: 11, color: '#fef3c7', background: '#78350f', padding: '2px 7px', borderRadius: 4 },
-  pinWarnPanel: { border: '1px solid #4a3410', background: '#1a1204', borderRadius: 8, padding: 12, marginBottom: 15 },
-  pinWarnTitle: { color: '#fbbf24', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
-  pinWarnItem: { color: '#e7d3a1', fontSize: 12, lineHeight: 1.5, padding: '4px 0', borderTop: '1px solid #2e2208' },
-  pinWarnHint: { color: '#8a7a55', fontSize: 11, marginTop: 8 },
-  
-  depList: { display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 20 },
-  modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 15px', borderRadius: 8, background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', boxShadow: '0 10px 26px rgba(0,0,0,0.16)' },
-  modChecked: { borderColor: '#6366f1', background: 'rgba(37,37,48,0.94)' },
-  modLeft: { display: 'flex', alignItems: 'flex-start', gap: 12 },
-  checkbox: { width: 18, height: 18, borderRadius: 5, border: '2px solid #3f3f46', display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 },
-  checkboxOn: { background: '#4f46e5', borderColor: '#4f46e5', color: '#fff' },
-  modName: { fontWeight: 'bold', fontSize: 14, marginBottom: 3 },
-  modDesc: { fontSize: 12, color: '#71717a', marginBottom: 5 },
-  modMeta: { display: 'flex', gap: 10, alignItems: 'center' },
-  reqBadge: { fontSize: 11, background: '#1a1040', color: '#818cf8', padding: '3px 8px', borderRadius: 20 },
-  optBadge: { fontSize: 11, background: '#1a2a1a', color: '#4ade80', padding: '3px 8px', borderRadius: 20 },
+  // 상태 표시는 전부 같은 형태: 왼쪽 컬러 바 + 작은 글씨 (색 채운 박스 금지)
+  errorBanner: { background: C.surface, borderLeft: `2px solid ${C.danger}`, color: '#d9a0a3', padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, fontSize: 12.5 },
+  scanBanner: { background: C.surface, borderLeft: '2px solid #3a3a41', color: C.sub, padding: '8px 12px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 9, marginBottom: 12, fontSize: 12.5 },
+  conflictPanel: { background: C.surface, borderLeft: `2px solid ${C.danger}`, borderRadius: 6, padding: '10px 12px', marginBottom: 12 },
+  conflictTitle: { color: '#d9a0a3', fontWeight: 700, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
+  conflictItem: { borderTop: `1px solid ${C.border}`, paddingTop: 9, marginTop: 9 },
+  conflictTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 },
+  conflictNames: { color: C.text, fontWeight: 600, fontSize: 12.5 },
+  conflictReason: { color: C.sub, fontSize: 12, lineHeight: 1.5 },
+  conflictSource: { color: C.mute, fontSize: 11, marginTop: 5 },
+  blockerBadge: { fontSize: 11, color: C.danger, background: C.surface2, padding: '2px 7px', borderRadius: 4 },
+  warnBadge: { fontSize: 11, color: C.warn, background: C.surface2, padding: '2px 7px', borderRadius: 4 },
+  pinWarnPanel: { background: C.surface, borderLeft: `2px solid ${C.warn}`, borderRadius: 6, padding: '10px 12px', marginBottom: 12 },
+  pinWarnTitle: { color: C.warn, fontWeight: 700, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  pinWarnItem: { color: C.sub, fontSize: 12, lineHeight: 1.5, padding: '3px 0' },
+  pinWarnHint: { color: C.mute, fontSize: 11, marginTop: 6 },
 
-  installFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '15px 0', borderTop: '1px solid #2a2a2e', marginTop: 10 },
-  installBtn: { background: '#6366f1', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, fontWeight: 'bold' },
-  successTxt: { color: '#4ade80', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 },
-  errorTxt: { color: '#f87171', fontSize: 13, display: 'flex', alignItems: 'center', gap: 5 },
-  mutedTxt: { color: '#71717a', fontSize: 13 },
+  depList: { display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 },
+  modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderRadius: 10, background: C.surface, border: `1px solid ${C.border}` },
+  modChecked: { borderColor: '#3a5c46', background: '#1a211c' },
+  modLeft: { display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 },
+  checkbox: { width: 17, height: 17, borderRadius: 5, border: '2px solid #3a3a41', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: C.accentText },
+  checkboxOn: { background: C.accent, borderColor: C.accent },
+  modName: { fontWeight: 600, fontSize: 13.5, marginBottom: 2 },
+  modDesc: { fontSize: 12, color: C.mute, marginBottom: 5 },
+  modMeta: { display: 'flex', gap: 8, alignItems: 'center' },
+  reqBadge: { fontSize: 11, background: C.surface2, color: C.sub, padding: '2px 8px', borderRadius: 4 },
+  optBadge: { fontSize: 11, background: C.surface2, color: C.accent, padding: '2px 8px', borderRadius: 4 },
+  installedBadge: { fontSize: 11, border: '1px solid #3a5c46', color: C.accent, padding: '1px 7px', borderRadius: 4, whiteSpace: 'nowrap' },
 
-  listWrap: { display: 'flex', flexDirection: 'column', gap: 10 },
-  installedItem: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
-  delBtn: { background: '#2a1515', border: '1px solid #3f1515', color: '#f87171', borderRadius: 6, padding: '8px', cursor: 'pointer', display: 'flex' },
-  updateBtn: { background: '#312e81', border: '1px solid #4338ca', color: '#c7d2fe', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 'bold', whiteSpace: 'nowrap' },
+  installFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '14px 0', borderTop: `1px solid ${C.border}`, marginTop: 8 },
+  installBtn: { background: C.accent, color: C.accentText, border: 'none', padding: '9px 18px', borderRadius: 8, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, fontWeight: 700, fontSize: 13 },
+  successTxt: { color: C.accent, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 },
+  errorTxt: { color: C.danger, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 5 },
+  mutedTxt: { color: C.mute, fontSize: 12.5 },
 
-  profileGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 },
-  profileCard: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, cursor: 'pointer', minHeight: 90, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
-  profileActive: { borderColor: '#4f46e5' },
-  profileCardName: { fontWeight: 'bold', fontSize: 15 },
-  iconBtn: { background: 'transparent', border: 'none', color: '#71717a', cursor: 'pointer' },
-  
-  chips: { display: 'flex', gap: 5, marginTop: 10 },
-  chip: { fontSize: 11, background: '#27272a', color: '#a1a1aa', padding: '3px 8px', borderRadius: 5 },
-  label: { fontSize: 12, color: '#71717a', fontWeight: 'bold', marginBottom: 10, display: 'block' },
-  input: { width: '100%', background: '#0f0f11', border: '1px solid #2a2a2e', color: '#fff', padding: '8px 10px', borderRadius: 6, marginBottom: 8, outline: 'none' },
-  select: { width: '100%', background: '#0f0f11', border: '1px solid #2a2a2e', color: '#fff', padding: '8px 10px', borderRadius: 6, outline: 'none' },
-  empty: { textAlign: 'center', padding: '40px 0', color: '#71717a' },
-  verTag: { fontSize: 11, background: '#27272a', padding: '2px 6px', borderRadius: 4, marginLeft: 5 },
-  updateBadge: { fontSize: 11, background: '#312e81', color: '#c7d2fe', padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
-  linkedBadge: { fontSize: 11, background: '#12351f', color: '#86efac', padding: '2px 7px', borderRadius: 4, marginLeft: 8, fontWeight: 'normal' },
-  pinBadge: { fontSize: 11, background: '#3b2f14', color: '#fbbf24', padding: '2px 6px', borderRadius: 4 },
-  linkBtn: { background: '#14b8a6', color: '#04211d', border: 'none', padding: '7px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold', fontSize: 12 },
-  playBtn: { background: '#16a34a', color: '#fff', border: 'none', padding: '7px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 },
-  playBtnWide: { width: '100%', marginTop: 10, background: 'linear-gradient(135deg, #16a34a, #15803d)', color: '#fff', border: 'none', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, boxShadow: '0 10px 24px rgba(22,163,74,0.25)' },
-  stopBtnWide: { width: '100%', marginTop: 10, background: 'linear-gradient(135deg, #dc2626, #b91c1c)', color: '#fff', border: 'none', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, boxShadow: '0 10px 24px rgba(220,38,38,0.25)' },
-  logBox: { background: '#0a0a0c', border: '1px solid #26262c', borderRadius: 8, padding: '10px 12px', maxHeight: 260, overflowY: 'auto', fontFamily: 'Consolas, monospace', fontSize: 11, userSelect: 'text' },
-  logLine: { whiteSpace: 'pre-wrap', color: '#9ca3af', lineHeight: 1.55, overflowWrap: 'anywhere' },
-  logJumpBtn: { position: 'absolute', right: 12, bottom: 12, background: 'rgba(49,46,129,0.92)', border: '1px solid #4338ca', color: '#c7d2fe', borderRadius: 20, padding: '5px 12px', cursor: 'pointer', fontSize: 11, fontWeight: 'bold', boxShadow: '0 6px 16px rgba(0,0,0,0.35)' },
-  crashBanner: { border: '1px solid #7f1d1d', background: '#180a0a', borderRadius: 8, padding: 14, marginBottom: 15 },
-  crashTitle: { color: '#fca5a5', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
-  crashSummary: { color: '#e5c1c1', fontSize: 12, lineHeight: 1.55, userSelect: 'text', overflowWrap: 'anywhere' },
-  sideNote: { fontSize: 11, color: '#8b8b95', marginTop: 8, lineHeight: 1.45, userSelect: 'text' },
-  accountBlock: { background: 'linear-gradient(180deg, #202127, #18181b)', padding: 12, borderRadius: 8, marginTop: 12, border: '1px solid #2d2d34' },
+  listWrap: { display: 'flex', flexDirection: 'column', gap: 6 },
+  installedItem: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: '12px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' },
+  delBtn: { background: 'transparent', border: `1px solid ${C.border}`, color: C.mute, borderRadius: 7, padding: 7, cursor: 'pointer', display: 'flex' },
+  updateBtn: { background: 'transparent', border: '1px solid #3a5c46', color: C.accent, borderRadius: 7, padding: '7px 11px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' },
+
+  profileGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 },
+  profileCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, cursor: 'pointer', minHeight: 88 },
+  profileActive: { borderColor: '#45454e' },
+  profileCardName: { fontWeight: 600, fontSize: 14 },
+  iconBtn: { background: 'transparent', border: 'none', color: C.mute, cursor: 'pointer' },
+
+  chips: { display: 'flex', gap: 4, marginTop: 9 },
+  chip: { fontSize: 11, background: C.surface2, color: C.sub, padding: '2px 8px', borderRadius: 4 },
+  label: { fontSize: 11.5, color: C.mute, fontWeight: 700, marginBottom: 8, display: 'block', letterSpacing: 0.3 },
+  input: { width: '100%', background: C.bg, border: `1px solid ${C.border}`, color: C.text, padding: '8px 10px', borderRadius: 7, marginBottom: 8, outline: 'none', fontSize: 13 },
+  select: { width: '100%', background: C.bg, border: `1px solid ${C.border}`, color: C.text, padding: '8px 10px', borderRadius: 7, outline: 'none', fontSize: 13 },
+  empty: { textAlign: 'center', padding: '48px 0', color: C.mute, fontSize: 13 },
+  verTag: { fontSize: 11, background: C.surface2, color: C.sub, padding: '2px 6px', borderRadius: 4, marginLeft: 5 },
+  updateBadge: { fontSize: 11, background: C.surface2, color: C.accent, padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
+  linkedBadge: { fontSize: 11, background: C.surface2, color: C.accent, padding: '2px 7px', borderRadius: 4, marginLeft: 8, fontWeight: 400 },
+  pinBadge: { fontSize: 11, background: C.surface2, color: C.warn, padding: '2px 6px', borderRadius: 4 },
+  linkBtn: { background: 'transparent', border: `1px solid ${C.border}`, color: C.soft, padding: '7px 13px', borderRadius: 7, cursor: 'pointer', fontWeight: 600, fontSize: 12 },
+  playBtn: { background: C.accent, color: C.accentText, border: 'none', padding: '7px 14px', borderRadius: 7, cursor: 'pointer', fontWeight: 700, fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 },
+  playBtnWide: { width: '100%', marginTop: 10, background: C.accent, color: C.accentText, border: 'none', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13.5, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  stopBtnWide: { width: '100%', marginTop: 10, background: 'transparent', border: `1px solid ${C.danger}`, color: C.danger, padding: '9px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 },
+  logBox: { background: '#0f0f12', border: `1px solid ${C.border}`, borderRadius: 8, padding: '10px 12px', maxHeight: 260, overflowY: 'auto', fontFamily: 'Consolas, monospace', fontSize: 11, userSelect: 'text' },
+  logLine: { whiteSpace: 'pre-wrap', color: C.sub, lineHeight: 1.55, overflowWrap: 'anywhere' },
+  logJumpBtn: { position: 'absolute', right: 12, bottom: 12, background: C.surface2, border: '1px solid #3a3a41', color: C.soft, borderRadius: 20, padding: '4px 11px', cursor: 'pointer', fontSize: 11, fontWeight: 600 },
+  crashBanner: { background: C.surface, borderLeft: `2px solid ${C.danger}`, borderRadius: 6, padding: '10px 12px', marginBottom: 12 },
+  crashTitle: { color: C.danger, fontWeight: 700, fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 },
+  crashSummary: { color: C.sub, fontSize: 12, lineHeight: 1.55, userSelect: 'text', overflowWrap: 'anywhere' },
+  sideNote: { fontSize: 11, color: C.mute, marginTop: 8, lineHeight: 1.45, userSelect: 'text', maxHeight: 64, overflow: 'hidden' },
+  accountBlock: { background: C.surface, padding: 12, borderRadius: 10, marginTop: 12, border: `1px solid ${C.border}` },
   accountRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
-  accountDot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', flexShrink: 0, boxShadow: '0 0 8px rgba(74,222,128,0.6)' },
-  accountName: { fontSize: 13, fontWeight: 'bold', color: '#e8e8ea', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  accountHint: { fontSize: 11, color: '#8b8b95', lineHeight: 1.45, marginTop: 6, marginBottom: 6, userSelect: 'text' },
-  accountCode: { fontFamily: 'Consolas, monospace', fontSize: 20, fontWeight: 'bold', letterSpacing: 2, color: '#a5b4fc', background: '#101014', border: '1px solid #34343b', borderRadius: 6, padding: '8px 10px', textAlign: 'center', marginBottom: 8, userSelect: 'text' },
-  msLoginBtn: { width: '100%', background: 'linear-gradient(135deg, #2563eb, #4f46e5)', color: '#fff', border: 'none', padding: '9px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13, boxShadow: '0 10px 24px rgba(37,99,235,0.25)' },
-  offlineBtn: { width: '100%', marginTop: 6, background: 'transparent', border: '1px dashed #3f3f46', color: '#8b8b95', padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 12 },
-  statRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 },
-  statCard: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 16, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
-  statValue: { fontSize: 20, fontWeight: 'bold', color: '#f4f4f5' },
-  statLabel: { fontSize: 12, color: '#71717a', marginTop: 4 },
-  progressWrap: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 16, marginBottom: 18, display: 'flex', flexDirection: 'column', gap: 10 },
-  progressTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, fontSize: 13, color: '#d4d4d8' },
-  progressTrack: { height: 8, background: '#27272a', borderRadius: 4, overflow: 'hidden' },
-  progressFill: { height: '100%', background: 'linear-gradient(90deg, #6366f1, #14b8a6)', transition: 'width 0.3s ease' },
-  logRow: { display: 'flex', alignItems: 'center', gap: 14, padding: '11px 14px', background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, fontSize: 13 },
-  okBadge: { fontSize: 11, background: '#12351f', color: '#86efac', padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
-  recommendHero: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: 'linear-gradient(135deg, rgba(31,41,55,0.94), rgba(24,24,27,0.92))', border: '1px solid #30323b', borderRadius: 8, padding: 18, marginBottom: 18, boxShadow: '0 18px 40px rgba(0,0,0,0.20)' },
-  heroKicker: { color: '#a5b4fc', fontSize: 12, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
-  heroTitle: { color: '#f4f4f5', fontSize: 18, fontWeight: 'bold' },
-  heroSub: { color: '#8b8b95', fontSize: 13, marginTop: 4 },
-  recommendList: { display: 'flex', flexDirection: 'column', gap: 8 },
-  recommendCard: { textAlign: 'left', color: '#e8e8ea', background: 'rgba(24,24,27,0.9)', border: '1px solid #2d2d34', borderRadius: 8, padding: 14, cursor: 'pointer', boxShadow: '0 14px 30px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column', gap: 10 },
-  recommendCardOpen: { borderColor: '#6366f1', background: 'rgba(37,37,55,0.95)' },
-  recToggle: { fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#1a2a1a', color: '#4ade80', whiteSpace: 'nowrap', flexShrink: 0 },
-  recToggleOpen: { fontSize: 11, padding: '3px 10px', borderRadius: 20, background: '#27272a', color: '#a1a1aa', whiteSpace: 'nowrap', flexShrink: 0 },
-  recPanel: { background: 'rgba(15,15,20,0.96)', border: '1px solid #3a3a4a', borderTop: 'none', borderRadius: '0 0 8px 8px', padding: '16px 16px 12px', marginTop: -4 },
-  recPanelLabel: { fontSize: 11, fontWeight: 'bold', color: '#52525b', letterSpacing: 0.8, textTransform: 'uppercase', margin: '0 0 8px' },
-  recPanelFooter: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 12, borderTop: '1px solid #2a2a2e', marginTop: 8 },
-  recommendCardTop: { display: 'flex', gap: 12, alignItems: 'flex-start' },
-  modIcon: { width: 42, height: 42, borderRadius: 8, objectFit: 'cover', flexShrink: 0, background: '#27272a', border: '1px solid #34343b' },
-  modIconFallback: { width: 42, height: 42, borderRadius: 8, background: 'linear-gradient(135deg, #27272a, #1f2937)', color: '#a1a1aa', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: '1px solid #34343b' },
-  reasonBox: { color: '#c7d2fe', background: 'rgba(79,70,229,0.12)', border: '1px solid rgba(129,140,248,0.22)', borderRadius: 6, padding: '8px 9px', fontSize: 12, lineHeight: 1.4 },
+  accountDot: { width: 7, height: 7, borderRadius: '50%', background: C.accent, flexShrink: 0 },
+  accountName: { fontSize: 13, fontWeight: 600, color: C.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  accountHint: { fontSize: 11, color: C.mute, lineHeight: 1.45, marginTop: 6, marginBottom: 6, userSelect: 'text' },
+  accountCode: { fontFamily: 'Consolas, monospace', fontSize: 19, fontWeight: 700, letterSpacing: 2, color: C.text, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 7, padding: '8px 10px', textAlign: 'center', marginBottom: 8, userSelect: 'text' },
+  msLoginBtn: { width: '100%', background: C.text, color: C.bg, border: 'none', padding: '9px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 700, fontSize: 12.5 },
+  offlineBtn: { width: '100%', marginTop: 6, background: 'transparent', border: '1px dashed #3a3a41', color: C.mute, padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 12 },
+  statRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 16 },
+  statCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 15 },
+  statValue: { fontSize: 18, fontWeight: 700, color: C.text },
+  statLabel: { fontSize: 12, color: C.mute, marginTop: 3 },
+  progressWrap: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 14, marginBottom: 16, display: 'flex', flexDirection: 'column', gap: 9 },
+  progressTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, fontSize: 12.5, color: C.soft },
+  progressTrack: { height: 6, background: C.surface2, borderRadius: 3, overflow: 'hidden' },
+  progressFill: { height: '100%', background: C.accent, transition: 'width 0.3s ease' },
+  logRow: { display: 'flex', alignItems: 'center', gap: 12, padding: '10px 13px', background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12.5 },
+  okBadge: { fontSize: 11, background: C.surface2, color: C.sub, padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
+  recommendList: { display: 'flex', flexDirection: 'column', gap: 6 },
+  recommendCard: { textAlign: 'left', color: C.text, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: 13, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 9 },
+  recToggle: { fontSize: 11, padding: '3px 10px', borderRadius: 4, background: C.surface2, color: C.sub, whiteSpace: 'nowrap', flexShrink: 0 },
+  recommendCardTop: { display: 'flex', gap: 11, alignItems: 'flex-start' },
+  modIcon: { width: 40, height: 40, borderRadius: 8, objectFit: 'cover', flexShrink: 0, background: C.surface2, border: `1px solid ${C.border}` },
+  modIconFallback: { width: 40, height: 40, borderRadius: 8, background: C.surface2, color: C.mute, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, border: `1px solid ${C.border}` },
+  reasonBox: { color: C.sub, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, padding: '7px 9px', fontSize: 12, lineHeight: 1.4 },
 }

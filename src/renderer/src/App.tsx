@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
-import type { ConflictDetail, ModDetail, ModRow, ModUpdateInfo, ScannedJarMod } from '../../preload/index.d'
+import { useState, useEffect, useRef } from 'react'
+import type { AuthStatus, ConflictDetail, DeviceCodeInfo, GameFilesProgress, ModDetail, ModRow, ModUpdateInfo, MrpackProgress, ScannedJarMod, SyncProgress, SyncStatus } from '../../preload/index.d'
 
 // --- Types ---
-type Page = 'search' | 'recommended' | 'installed' | 'profiles' | 'modDetail'
+type Page = 'search' | 'recommended' | 'installed' | 'profiles' | 'modDetail' | 'sync'
 type ViewMode = 'list' | 'detail'
 
 // --- Inline Icons ---
@@ -17,6 +17,30 @@ const Icon = {
   Download:  () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>,
   Alert:     () => <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
   ArrowLeft: () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>,
+  Play:      () => <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="6 3 20 12 6 21 6 3"/></svg>,
+  Database:  () => <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>,
+}
+
+const GAME_FILES_PHASE_LABEL: Record<string, string> = {
+  client: '클라이언트',
+  libraries: '라이브러리',
+  assets: '에셋',
+}
+
+// 게임 로그 줄 색상 (에러/경고 강조)
+function logLineColor(line: string): string {
+  if (/ERROR|SEVERE|FATAL|Exception|Caused by/i.test(line)) return '#f87171'
+  if (/WARN/i.test(line)) return '#fbbf24'
+  return '#9ca3af'
+}
+
+// SQLite CURRENT_TIMESTAMP는 UTC를 'YYYY-MM-DD HH:MM:SS'로 저장하므로 Z를 붙여 파싱
+function formatDbDate(value?: string | null, dateOnly = false): string {
+  if (!value) return '-'
+  const iso = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return value
+  return dateOnly ? d.toLocaleDateString() : d.toLocaleString()
 }
 
 export default function App() {
@@ -38,11 +62,48 @@ export default function App() {
   const [isExporting, setExporting] = useState(false)
   const [importStatus, setImportStatus] = useState('')
   const [isImporting, setImporting] = useState(false)
+  const [mrpackProgress, setMrpackProgress] = useState<MrpackProgress | null>(null)
   const [backupStatus, setBackupStatus] = useState('')
+  const [activateStatus, setActivateStatus] = useState('')
+  const [isActivating, setActivating] = useState(false)
+  const [launchingId, setLaunchingId] = useState<string | number | null>(null)
+  const [launchStatus, setLaunchStatus] = useState('')
+  const [launchHelpUrl, setLaunchHelpUrl] = useState('')
+  const [isPreparingFiles, setPreparingFiles] = useState(false)
+  const [gameFilesProgress, setGameFilesProgress] = useState<GameFilesProgress | null>(null)
+  const [prepStatus, setPrepStatus] = useState('')
+  const [runningProfileId, setRunningProfileId] = useState<string | number | null>(null)
+  const [runningPid, setRunningPid] = useState<number | null>(null)
+  const [gameLogs, setGameLogs] = useState<string[]>([])
+  const [logStickToBottom, setLogStickToBottom] = useState(true)
+  const logBoxRef = useRef<HTMLDivElement | null>(null)
+  const [crashInfo, setCrashInfo] = useState<{ path: string | null; summary: string | null } | null>(null)
+
+  // --- Auth States ---
+  const [authInfo, setAuthInfo] = useState<AuthStatus | null>(null)
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authDeviceCode, setAuthDeviceCode] = useState<DeviceCodeInfo | null>(null)
+  const [authMsg, setAuthMsg] = useState('')
+  const [showClientIdInput, setShowClientIdInput] = useState(false)
+  const [clientIdInput, setClientIdInput] = useState('')
+  const [showOfflineInput, setShowOfflineInput] = useState(false)
+  const [offlineNameInput, setOfflineNameInput] = useState('')
+
+  // --- Launch Settings ---
+  const [memoryMb, setMemoryMb] = useState(4096)
+  const [totalMemoryMb, setTotalMemoryMb] = useState<number | null>(null)
+
+  // --- DB Sync States ---
+  const [dbStatus, setDbStatus] = useState<SyncStatus | null>(null)
+  const [isSyncing, setSyncing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
+  const [syncLimit, setSyncLimit] = useState(100)
+  const [syncMessage, setSyncMessage] = useState('')
   const [lastBackupPath, setLastBackupPath] = useState('')
   const [isBackingUp, setBackingUp] = useState(false)
   const [updates, setUpdates] = useState<Record<string, ModUpdateInfo>>({})
   const [isCheckingUpdates, setCheckingUpdates] = useState(false)
+  const [isApplyingUpdates, setApplyingUpdates] = useState(false)
   const [updateStatus, setUpdateStatus] = useState('')
 
   // --- Search & UI States ---
@@ -57,6 +118,7 @@ export default function App() {
   const [error, setError] = useState('')
   const [hasBlockingConflict, setHasBlockingConflict] = useState(false)
   const [conflictDetails, setConflictDetails] = useState<ConflictDetail[]>([])
+  const [pinWarnings, setPinWarnings] = useState<string[]>([])
   const [scannedJars, setScannedJars] = useState<ScannedJarMod[]>([])
   const [detailMod, setDetailMod] = useState<ModDetail | null>(null)
   const [detailFallback, setDetailFallback] = useState<ModRow | null>(null)
@@ -67,8 +129,13 @@ export default function App() {
   const [installStatus, setInstSt] = useState<'idle'|'installing'|'done'|'error'>('idle')
   const [installMsg, setInstMsg] = useState('')
 
-  const api = (window as any).electron
+  const api = window.electron
   const activeDetail = detailMod ?? detailFallback
+  const updateCount = Object.values(updates).filter(u => u.update_available).length
+  const lastSyncLog = dbStatus?.logs?.[0]
+  const syncPct = syncProgress && syncProgress.total > 0
+    ? Math.min(100, Math.round((syncProgress.synced / syncProgress.total) * 100))
+    : 0
 
   // 초기 프로필 로드
   useEffect(() => { loadProfiles() }, [])
@@ -86,11 +153,100 @@ export default function App() {
     if (activeProfile && page === 'recommended') loadRecommendations()
   }, [activeProfile, page])
 
+  useEffect(() => {
+    if (page === 'sync') {
+      loadSyncStatus()
+      api.getLaunchSettings().then((settings) => {
+        setMemoryMb(settings.memoryMb)
+        setTotalMemoryMb(settings.totalMemoryMb)
+      }).catch(() => {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page])
+
+  // 동기화 진행 이벤트 구독
+  useEffect(() => {
+    const unsubscribe = api.onSyncProgress((data) => setSyncProgress(data))
+    return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // mrpack 가져오기 진행 이벤트 구독
+  useEffect(() => {
+    const unsubscribe = api.onMrpackProgress((data) => setMrpackProgress(data))
+    return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 로더 설치 단계 이벤트 구독 (실행 준비 중 상태 표시)
+  useEffect(() => {
+    const unsubscribe = api.onLoaderInstallProgress((data) => setLaunchStatus(data.message))
+    return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 게임 파일 다운로드 진행 이벤트 구독
+  useEffect(() => {
+    const unsubscribe = api.onGameFilesProgress((data) => setGameFilesProgress(data))
+    return unsubscribe
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 게임 로그/종료 이벤트 구독
+  useEffect(() => {
+    const offLog = api.onGameLog((data) => {
+      setGameLogs((prev) => [...prev, ...data.lines].slice(-300))
+    })
+    const offExit = api.onGameExit((data) => {
+      setRunningPid(null)
+      setRunningProfileId(null)
+      if (data.crashed) {
+        setLaunchStatus(`게임이 비정상 종료되었습니다 (코드 ${data.code ?? '알 수 없음'}).`)
+        setCrashInfo({ path: data.crashReportPath, summary: data.crashSummary })
+      } else {
+        setLaunchStatus(`게임이 종료되었습니다 (코드 ${data.code ?? '0'}).`)
+        setCrashInfo(null)
+      }
+    })
+    return () => { offLog(); offExit() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // 하단 고정 상태면 새 로그가 올 때 자동으로 맨 아래로 스크롤
+  useEffect(() => {
+    if (logStickToBottom && logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight
+    }
+  }, [gameLogs, logStickToBottom])
+
+  // 사용자가 위로 스크롤하면 자동 스크롤을 멈추고, 바닥 근처로 돌아오면 다시 고정
+  const handleLogScroll = () => {
+    const el = logBoxRef.current
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+    setLogStickToBottom(nearBottom)
+  }
+
+  const jumpToLogBottom = () => {
+    setLogStickToBottom(true)
+    if (logBoxRef.current) logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight
+  }
+
+  // 로그인 상태 로드 + 인증 이벤트 구독
+  useEffect(() => {
+    api.authStatus().then(setAuthInfo).catch(() => {})
+    const offCode = api.onAuthDeviceCode((info) => setAuthDeviceCode(info))
+    const offStage = api.onAuthStage((data) => setAuthMsg(data.message))
+    return () => { offCode(); offStage() }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const loadProfiles = async () => {
     try {
       const list = await api.getProfiles()
       setProfiles(list)
-      if (list.length > 0 && !activeProfile) setActive(list[0])
+      // 게임에 연결된 프로필이 있으면 우선 선택
+      if (list.length > 0 && !activeProfile) setActive(list.find(p => p.is_active) ?? list[0])
     } catch (e) {
       console.error('프로필 로드 실패:', e)
     }
@@ -163,9 +319,254 @@ export default function App() {
   const handleDeleteProfile = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
     if (!confirm('프로필을 삭제하시겠습니까?')) return
-    await api.deleteProfile(id)
-    if (activeProfile?.id === id) setActive(null)
-    loadProfiles()
+    await api.deleteProfile(String(id))
+    const list = await api.getProfiles()
+    setProfiles(list)
+    // 삭제한 프로필이 선택 중이었다면 남은 프로필로 선택을 옮김
+    if (activeProfile?.id === id) setActive(list.find(p => p.is_active) ?? list[0] ?? null)
+  }
+
+  // 프로필 활성화: 프로필 보관소를 게임 mods 폴더에 junction으로 연결
+  const handleActivateProfile = async (p: any, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    setActivating(true)
+    setActivateStatus('')
+    try {
+      const res = await api.activateProfile(String(p.id))
+      if (!res.ok) {
+        setActivateStatus(res.error ?? '프로필 연결에 실패했습니다.')
+        return
+      }
+      const parts = [`${p.name} 프로필을 게임 mods 폴더에 연결했습니다.`]
+      if (res.adoptedFiles) parts.push(`기존 파일 ${res.adoptedFiles}개를 프로필 보관소로 가져왔습니다.`)
+      if (res.backupPath) parts.push('기존 mods 폴더는 백업으로 보존했습니다.')
+      setActivateStatus(parts.join(' '))
+
+      const list = await api.getProfiles()
+      setProfiles(list)
+      setActive(list.find(x => String(x.id) === String(p.id)) ?? null)
+    } catch (err: any) {
+      setActivateStatus(err.message)
+    } finally {
+      setActivating(false)
+    }
+  }
+
+  const handleDeactivateProfile = async (e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    setActivating(true)
+    setActivateStatus('')
+    try {
+      const res = await api.deactivateProfile()
+      if (!res.ok) {
+        setActivateStatus(res.error ?? '연결 해제에 실패했습니다.')
+        return
+      }
+      setActivateStatus('게임 mods 폴더 연결을 해제했습니다.')
+      const list = await api.getProfiles()
+      setProfiles(list)
+    } catch (err: any) {
+      setActivateStatus(err.message)
+    } finally {
+      setActivating(false)
+    }
+  }
+
+  const loadSyncStatus = async () => {
+    try {
+      setDbStatus(await api.syncStatus())
+    } catch (e) {
+      console.error('동기화 상태 로드 실패:', e)
+    }
+  }
+
+  // Java 최대 메모리 변경 (슬라이더 step 단위라 호출 빈도 낮음 — 즉시 저장)
+  const handleMemoryChange = (value: number) => {
+    setMemoryMb(value)
+    api.setLaunchSettings({ memoryMb: value }).catch(() => {})
+  }
+
+  // Modrinth 인기 모드를 로컬 DB로 동기화
+  const handleSync = async () => {
+    setSyncing(true)
+    setSyncMessage('')
+    setSyncProgress(null)
+    try {
+      const res = await api.syncModrinth({ limit: syncLimit })
+      if (!res.success) {
+        setSyncMessage(res.error ?? '동기화에 실패했습니다.')
+        return
+      }
+      setSyncMessage(`${res.synced ?? 0}개 모드를 동기화했습니다.${res.errors ? ` (${res.errors}건 오류)` : ''}`)
+      await loadSyncStatus()
+    } catch (e: any) {
+      setSyncMessage(e.message)
+    } finally {
+      setSyncing(false)
+      setSyncProgress(null)
+    }
+  }
+
+  // --- Microsoft 로그인 ---
+  const handleLogin = async () => {
+    setAuthBusy(true)
+    setAuthMsg('')
+    setAuthDeviceCode(null)
+    try {
+      const res = await api.authStart()
+      if (!res.ok) {
+        if (res.errorCode === 'NO_CLIENT_ID') {
+          setShowClientIdInput(true)
+          setAuthMsg('Azure 앱 Client ID를 먼저 입력해 주세요.')
+        } else if (res.errorCode !== 'CANCELED') {
+          setAuthMsg(res.error ?? '로그인에 실패했습니다.')
+        } else {
+          setAuthMsg('')
+        }
+        return
+      }
+      setAuthInfo(await api.authStatus())
+      setAuthMsg(`${res.profile?.name}(으)로 로그인되었습니다.`)
+    } catch (e: any) {
+      setAuthMsg(e.message)
+    } finally {
+      setAuthBusy(false)
+      setAuthDeviceCode(null)
+    }
+  }
+
+  const handleAuthCancel = async () => {
+    await api.authCancel()
+    setAuthDeviceCode(null)
+    setAuthMsg('')
+  }
+
+  const handleLogout = async () => {
+    await api.authLogout()
+    setAuthInfo(await api.authStatus())
+    setAuthMsg('로그아웃되었습니다.')
+  }
+
+  const handleSaveClientId = async () => {
+    if (!clientIdInput.trim()) return
+    await api.authSetClientId(clientIdInput.trim())
+    setShowClientIdInput(false)
+    setAuthMsg('')
+    await handleLogin()
+  }
+
+  // 오프라인 모드 (싱글플레이 전용, 로그인 없이 자체 실행)
+  const handleEnableOffline = async () => {
+    const res = await api.authSetOffline(true, offlineNameInput)
+    if (!res.ok) {
+      setAuthMsg(res.error ?? '오프라인 모드 설정에 실패했습니다.')
+      return
+    }
+    setAuthInfo(res.status ?? await api.authStatus())
+    setShowOfflineInput(false)
+    setAuthMsg('오프라인 모드가 켜졌습니다. 싱글플레이만 가능합니다.')
+  }
+
+  const handleDisableOffline = async () => {
+    const res = await api.authSetOffline(false)
+    setAuthInfo(res.status ?? await api.authStatus())
+    setAuthMsg('오프라인 모드를 해제했습니다.')
+  }
+
+  // 게임 파일 준비: 로더 확보 + 클라이언트/라이브러리/에셋 다운로드
+  const handlePrepareGameFiles = async () => {
+    if (!activeProfile) return
+    setPreparingFiles(true)
+    setPrepStatus('')
+    setGameFilesProgress(null)
+    try {
+      const res = await api.prepareGameFiles(String(activeProfile.id))
+      if (!res.ok) {
+        setPrepStatus(res.error ?? '게임 파일 준비에 실패했습니다.')
+        return
+      }
+      const parts = [`게임 파일 준비 완료 (버전 ${res.versionId}).`]
+      if (res.loaderInstalled) parts.push('로더를 새로 설치했습니다.')
+      if (res.clientDownloaded) parts.push('클라이언트를 내려받았습니다.')
+      parts.push(`라이브러리 ${res.librariesDownloaded ?? 0}개 다운로드 (전체 ${res.librariesTotal ?? 0}개).`)
+      parts.push(`에셋 ${res.assetsDownloaded ?? 0}개 다운로드 (전체 ${res.assetsTotal ?? 0}개).`)
+      if (res.librariesMissing) parts.push(`주의: 라이브러리 ${res.librariesMissing}개를 확보하지 못했습니다.`)
+      if (res.assetsFailed) parts.push(`주의: 에셋 ${res.assetsFailed}개 실패.`)
+      setPrepStatus(parts.join(' '))
+    } catch (e: any) {
+      setPrepStatus(e.message)
+    } finally {
+      setPreparingFiles(false)
+      setGameFilesProgress(null)
+    }
+  }
+
+  // 공식 런처 위임 실행 (로그인 없이도 동작하는 폴백 경로)
+  const launchViaOfficialLauncher = async (p: any) => {
+    const res = await api.launchProfile(String(p.id))
+    if (!res.ok) {
+      setLaunchStatus(res.error ?? '실행에 실패했습니다.')
+      if (res.helpUrl) setLaunchHelpUrl(res.helpUrl)
+      return
+    }
+    const parts: string[] = []
+    if (res.loaderInstalled) parts.push(`${p.loader} 로더(${res.versionId})를 새로 설치했습니다.`)
+    parts.push(
+      res.launcherOpened
+        ? `공식 런처를 실행했습니다. "${res.registeredName}" 프로필로 바로 플레이하세요.`
+        : (res.warning ?? '런처를 자동으로 열지 못했습니다. 직접 실행해 주세요.')
+    )
+    setLaunchStatus(parts.join(' '))
+  }
+
+  // 프로필 실행: 로그인 상태면 자체 실행, 아니면 공식 런처 위임
+  const handleLaunchProfile = async (p: any, e?: React.MouseEvent) => {
+    e?.stopPropagation()
+    if (!p) return
+    setLaunchingId(p.id)
+    setLaunchStatus('')
+    setLaunchHelpUrl('')
+    try {
+      if (authInfo?.loggedIn || authInfo?.offlineEnabled) {
+        const res = await api.launchGameDirect(String(p.id))
+        if (res.ok) {
+          setGameLogs([])
+          setLogStickToBottom(true)
+          setCrashInfo(null)
+          setRunningPid(res.pid ?? null)
+          setRunningProfileId(p.id)
+          setLaunchStatus(`게임을 실행했습니다 (버전 ${res.versionId}, Java ${res.javaMajor ?? '?'}, PID ${res.pid})${res.offline ? ' — 오프라인 모드' : ''}.`)
+        } else if (res.needsLogin) {
+          setLaunchStatus(res.error ?? '로그인이 필요합니다.')
+          return
+        } else if (res.needsLoaderInstall) {
+          setLaunchStatus(res.error ?? '로더 설치에 실패했습니다.')
+          if (res.helpUrl) setLaunchHelpUrl(res.helpUrl)
+          return
+        } else {
+          // 자체 실행 실패 → 공식 런처로 폴백
+          setLaunchStatus(`자체 실행 실패(${res.error ?? '알 수 없는 오류'}) — 공식 런처로 대신 실행합니다.`)
+          await launchViaOfficialLauncher(p)
+        }
+      } else {
+        await launchViaOfficialLauncher(p)
+      }
+
+      // 실행 과정에서 프로필이 활성화되므로 연결 배지를 갱신
+      const list = await api.getProfiles()
+      setProfiles(list)
+      setActive(list.find(x => String(x.id) === String(p.id)) ?? null)
+    } catch (err: any) {
+      setLaunchStatus(err.message)
+    } finally {
+      setLaunchingId(null)
+    }
+  }
+
+  const handleStopGame = async () => {
+    if (runningProfileId == null) return
+    await api.stopGame(String(runningProfileId))
+    setLaunchStatus('게임 종료를 요청했습니다.')
   }
 
   // 설치된 모드 삭제
@@ -233,6 +634,37 @@ export default function App() {
     }
   }
 
+  // Modrinth 표준 모드팩(.mrpack) 가져오기
+  const handleImportMrpack = async () => {
+    setImporting(true)
+    setImportStatus('')
+    setMrpackProgress(null)
+    try {
+      const res = await api.importMrpack()
+      if (res.canceled) return
+      if (!res.ok && !res.profileId) {
+        setImportStatus(res.error ?? '.mrpack 가져오기에 실패했습니다.')
+        return
+      }
+
+      const parts = [`"${res.profileName}" 프로필을 만들고 파일 ${res.downloaded ?? 0}/${res.totalFiles ?? 0}개를 내려받았습니다.`]
+      if (res.registered) parts.push(`모드 정보 ${res.registered}개 등록.`)
+      if (res.overrides) parts.push(`설정 파일 ${res.overrides}개 적용.`)
+      if (res.failed?.length) parts.push(`${res.failed.length}개 실패: ${res.failed[0].reason}`)
+      parts.push('프로필을 "게임에 연결"하거나 "실행"하면 플레이 준비 완료입니다.')
+      setImportStatus(parts.join(' '))
+
+      const list = await api.getProfiles()
+      setProfiles(list)
+      if (res.profileId) setActive(list.find(p => Number(p.id) === res.profileId) ?? null)
+    } catch (e: any) {
+      setImportStatus(e.message)
+    } finally {
+      setImporting(false)
+      setMrpackProgress(null)
+    }
+  }
+
   const handleChooseInstallPath = async () => {
     if (!activeProfile) return
     const picked = await api.selectInstallPath()
@@ -288,6 +720,7 @@ export default function App() {
     setInstSt('idle')
     setConflictDetails([])
     setHasBlockingConflict(false)
+    setPinWarnings([])
 
     try {
       const res = await api.getModDetail(mod.modrinth_id, {
@@ -331,6 +764,62 @@ export default function App() {
     }
   }
 
+  // 업데이트 적용 (modrinthIds 생략 시 배지가 붙은 모든 모드)
+  const handleApplyUpdates = async (modrinthIds?: string[]) => {
+    if (!activeProfile) return
+    const ids = modrinthIds ?? Object.values(updates).filter(u => u.update_available).map(u => u.modrinth_id)
+    if (ids.length === 0) return
+
+    setApplyingUpdates(true)
+    setUpdateStatus('')
+    try {
+      const res = await api.applyProfileUpdates(String(activeProfile.id), {
+        gameVersion: activeProfile.game_version,
+        loader: activeProfile.loader,
+        modrinthIds: ids,
+      })
+      if (res.error) {
+        setUpdateStatus(res.error)
+        return
+      }
+
+      const parts: string[] = []
+      if (res.applied.length) parts.push(`${res.applied.length}개 모드를 업데이트했습니다.`)
+      if (res.failed.length) parts.push(`${res.failed.length}개 실패: ${res.failed[0].reason}`)
+      if (!res.applied.length && !res.failed.length) parts.push('적용할 업데이트가 없습니다.')
+      if (res.backupPath) {
+        setLastBackupPath(res.backupPath)
+        parts.push('적용 전 백업을 만들었습니다.')
+      }
+      setUpdateStatus(parts.join(' '))
+
+      // 적용된 모드의 배지를 API 재조회 없이 로컬에서 최신 상태로 갱신
+      setUpdates(prev => {
+        const next = { ...prev }
+        for (const item of res.applied) {
+          const info = next[item.modrinth_id]
+          if (info) {
+            next[item.modrinth_id] = {
+              ...info,
+              update_available: false,
+              status: 'up_to_date',
+              installed_version_id: info.latest_version_id,
+              installed_version_number: info.latest_version_number,
+            }
+          }
+        }
+        return next
+      })
+
+      await loadInstalledMods(activeProfile.id)
+      await refreshJarScan()
+    } catch (e: any) {
+      setUpdateStatus(e.message)
+    } finally {
+      setApplyingUpdates(false)
+    }
+  }
+
   // --- 코어 엔진 로직: 검색 ---
   const handleSearch = async () => {
     if (!query.trim()) return
@@ -357,7 +846,7 @@ export default function App() {
   const handleSelectMod = async (mod: ModRow) => {
     if (!activeProfile) { alert('프로필을 먼저 선택해 주세요!'); return; }
     
-    setSearching(true); setError(''); setHasBlockingConflict(false); setConflictDetails([]); setDepResults([]); setSelected(new Set()); setInstSt('idle')
+    setSearching(true); setError(''); setHasBlockingConflict(false); setConflictDetails([]); setDepResults([]); setSelected(new Set()); setInstSt('idle'); setPinWarnings([])
     try {
       // 설치된 모드 ID 추출
       const currentInstalled = await loadInstalledMods(activeProfile.id)
@@ -366,7 +855,7 @@ export default function App() {
       const resolved = await api.resolveDeps(mod.modrinth_id, {
         gameVersion: activeProfile.game_version,
         loader: activeProfile.loader,
-        selected: installedIds 
+        selected: installedIds
       })
 
       if (resolved.error && !resolved.root) {
@@ -375,6 +864,14 @@ export default function App() {
       if (resolved.conflicts && resolved.conflicts.length > 0) {
         setHasBlockingConflict(true)
         setError(`[경고] 기존에 설치된 모드와 호환되지 않는 충돌이 감지되었습니다 (${resolved.conflicts.length}건)`)
+      }
+      if (resolved.pinConflicts && resolved.pinConflicts.length > 0) {
+        setPinWarnings(resolved.pinConflicts.map(c => {
+          const requests = c.requests
+            .map(r => `${r.requested_by.join(', ')}는 v${r.version_number ?? r.version_id} 요구`)
+            .join(' · ')
+          return `${c.name}: ${requests} → v${c.chosen_version_number ?? '?'}이(가) 선택되었습니다.`
+        }))
       }
 
       let flat: ModRow[] = []
@@ -442,7 +939,8 @@ export default function App() {
 
     setInstSt('installing')
     try {
-      const res = await api.downloadMods(toInstall, activeProfile.install_path || '.minecraft/mods')
+      // install_path가 없으면 undefined를 넘겨 메인 프로세스가 실제 게임 mods 폴더를 계산하게 한다
+      const res = await api.downloadMods(toInstall, activeProfile.install_path || undefined)
       if (res.success) {
         setInstSt('done')
         if (res.backupPath) setLastBackupPath(res.backupPath)
@@ -494,7 +992,7 @@ export default function App() {
             onChange={(e) => setActive(profiles.find(p => String(p.id) === e.target.value) || null)}
           >
             {profiles.length === 0 && <option value="">프로필 없음</option>}
-            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {profiles.map(p => <option key={p.id} value={p.id}>{p.name}{p.is_active ? ' (연결됨)' : ''}</option>)}
           </select>
           {activeProfile && (
             <div style={s.chips}>
@@ -502,6 +1000,21 @@ export default function App() {
               <span style={s.chip}>{activeProfile.game_version}</span>
             </div>
           )}
+          {activeProfile && runningPid == null && (
+            <button
+              style={s.playBtnWide}
+              onClick={() => handleLaunchProfile(activeProfile)}
+              disabled={launchingId !== null}
+            >
+              <Icon.Play /> {launchingId !== null ? '실행 준비 중...' : '게임 실행'}
+            </button>
+          )}
+          {runningPid != null && (
+            <button style={s.stopBtnWide} onClick={handleStopGame}>
+              게임 종료 (PID {runningPid})
+            </button>
+          )}
+          {launchStatus && <div style={s.sideNote}>{launchStatus}</div>}
         </div>
 
         <nav style={s.nav}>
@@ -509,7 +1022,101 @@ export default function App() {
           <button onClick={() => setPage('recommended')} style={{...s.navBtn, ...(page === 'recommended' ? s.navActive : {})}}><Icon.Sparkles /> 추천 모드</button>
           <button onClick={() => setPage('installed')} style={{...s.navBtn, ...(page === 'installed' ? s.navActive : {})}}><Icon.Package /> 설치된 모드</button>
           <button onClick={() => setPage('profiles')} style={{...s.navBtn, ...(page === 'profiles' ? s.navActive : {})}}><Icon.User /> 프로필 관리</button>
+          <button onClick={() => setPage('sync')} style={{...s.navBtn, ...(page === 'sync' ? s.navActive : {})}}><Icon.Database /> 데이터베이스</button>
         </nav>
+
+        {/* --- 계정 --- */}
+        <div style={s.accountBlock}>
+          <p style={{ ...s.label, marginBottom: 8 }}>계정</p>
+
+          {authInfo?.loggedIn ? (
+            <>
+              <div style={s.accountRow}>
+                <span style={s.accountDot} />
+                <span style={s.accountName}>{authInfo.name ?? 'Microsoft 계정'}</span>
+              </div>
+              <button style={{ ...s.ghostBtn, width: '100%', marginTop: 8, padding: '7px' }} onClick={handleLogout}>
+                로그아웃
+              </button>
+            </>
+          ) : authDeviceCode ? (
+            <>
+              <div style={s.accountHint}>브라우저에서 아래 코드를 입력하세요</div>
+              <div style={s.accountCode}>{authDeviceCode.user_code}</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...s.linkBtn, flex: 1 }} onClick={() => window.open(authDeviceCode.verification_uri)}>
+                  브라우저 열기
+                </button>
+                <button style={{ ...s.ghostBtn, padding: '7px 10px' }} onClick={() => navigator.clipboard.writeText(authDeviceCode.user_code)}>
+                  복사
+                </button>
+              </div>
+              <button style={{ ...s.ghostBtn, width: '100%', marginTop: 6, padding: '6px' }} onClick={handleAuthCancel}>
+                취소
+              </button>
+            </>
+          ) : showClientIdInput ? (
+            <>
+              <div style={s.accountHint}>Azure 앱 Client ID 입력</div>
+              <input
+                style={{ ...s.input, marginBottom: 6, fontSize: 11 }}
+                value={clientIdInput}
+                onChange={(e) => setClientIdInput(e.target.value)}
+                placeholder="00000000-0000-0000-0000-000000000000"
+              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...s.linkBtn, flex: 1 }} onClick={handleSaveClientId}>저장 후 로그인</button>
+                <button style={{ ...s.ghostBtn, padding: '7px 10px' }} onClick={() => setShowClientIdInput(false)}>취소</button>
+              </div>
+            </>
+          ) : showOfflineInput ? (
+            <>
+              <div style={s.accountHint}>오프라인 닉네임 (영문/숫자/_ 3~16자)</div>
+              <input
+                style={{ ...s.input, marginBottom: 6 }}
+                value={offlineNameInput}
+                onChange={(e) => setOfflineNameInput(e.target.value)}
+                placeholder="Steve"
+                onKeyDown={(e) => e.key === 'Enter' && handleEnableOffline()}
+              />
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...s.linkBtn, flex: 1 }} onClick={handleEnableOffline}>사용</button>
+                <button style={{ ...s.ghostBtn, padding: '7px 10px' }} onClick={() => setShowOfflineInput(false)}>취소</button>
+              </div>
+            </>
+          ) : authInfo?.offlineEnabled ? (
+            <>
+              <div style={s.accountRow}>
+                <span style={{ ...s.accountDot, background: '#fbbf24', boxShadow: '0 0 8px rgba(251,191,36,0.5)' }} />
+                <span style={s.accountName}>오프라인 · {authInfo.offlineUsername}</span>
+              </div>
+              <div style={s.accountHint}>싱글플레이 전용입니다. 온라인 서버는 로그인이 필요합니다.</div>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...s.linkBtn, flex: 1 }} onClick={handleLogin} disabled={authBusy}>
+                  {authBusy ? '로그인 중...' : '로그인'}
+                </button>
+                <button style={{ ...s.ghostBtn, padding: '7px 10px' }} onClick={handleDisableOffline}>해제</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <button style={s.msLoginBtn} onClick={handleLogin} disabled={authBusy}>
+                {authBusy ? '로그인 진행 중...' : 'Microsoft 로그인'}
+              </button>
+              <button
+                style={s.offlineBtn}
+                onClick={() => {
+                  setOfflineNameInput(authInfo?.offlineUsername ?? '')
+                  setShowOfflineInput(true)
+                }}
+              >
+                오프라인 모드로 플레이
+              </button>
+            </>
+          )}
+
+          {authMsg && <div style={s.accountHint}>{authMsg}</div>}
+        </div>
       </aside>
 
       {/* --- 메인 컨텐츠 --- */}
@@ -539,14 +1146,15 @@ export default function App() {
               </button>
             </div>
 
-            {error && <div style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+            {error && <div className="banner" style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
             {scannedJars.length > 0 && (
-              <div style={s.scanBanner}>
+              <div className="banner" style={s.scanBanner}>
                 <Icon.Package />
                 <span>mods 폴더 jar {scannedJars.length}개를 함께 검사 중입니다.</span>
               </div>
             )}
             {conflictDetails.length > 0 && <ConflictPanel conflicts={conflictDetails} />}
+            {pinWarnings.length > 0 && <PinWarningPanel warnings={pinWarnings} />}
 
             {viewMode === 'list' && searchResults.length > 0 && (
               <>
@@ -627,8 +1235,9 @@ export default function App() {
                     </div>
                   </div>
 
-                  {error && <div style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+                  {error && <div className="banner" style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
                   {conflictDetails.length > 0 && <ConflictPanel conflicts={conflictDetails} />}
+                  {pinWarnings.length > 0 && <PinWarningPanel warnings={pinWarnings} />}
 
                   <div style={s.detailGrid}>
                     <div style={s.detailPanel}>
@@ -702,7 +1311,7 @@ export default function App() {
               <p style={s.pageDesc}>{activeProfile ? `${activeProfile.name}에 설치된 모드 성향을 기준으로 골랐습니다.` : '프로필을 먼저 선택해 주세요'}</p>
             </div>
 
-            {error && <div style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
+            {error && <div className="banner" style={s.errorBanner}><Icon.Alert /><span>{error}</span></div>}
 
             <div style={s.recommendHero}>
               <div>
@@ -725,7 +1334,7 @@ export default function App() {
             ) : (
               <div style={s.recommendList}>
                 {recommendedMods.map(mod => (
-                  <div key={mod.modrinth_id} style={s.recommendCard} onClick={() => openModDetail(mod, 'recommended')}>
+                  <div key={mod.modrinth_id} className="card" style={s.recommendCard} onClick={() => openModDetail(mod, 'recommended')}>
                     <div style={s.recommendCardTop}>
                       <ModIcon src={mod.icon_url} alt={mod.name} />
                       <div style={{ flex: 1, minWidth: 0 }}>
@@ -760,17 +1369,22 @@ export default function App() {
                 <p style={s.pageDesc}>{activeProfile?.name} 프로필에 설치된 모드 목록입니다.</p>
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button style={s.ghostBtnTall} onClick={handleCheckUpdates} disabled={!activeProfile || isCheckingUpdates}>
+                <button style={s.ghostBtnTall} onClick={handleCheckUpdates} disabled={!activeProfile || isCheckingUpdates || isApplyingUpdates}>
                   <Icon.Check /> {isCheckingUpdates ? '확인 중...' : '업데이트 확인'}
                 </button>
-                <button style={s.primaryBtnTall} onClick={handleExportPack} disabled={!activeProfile || isExporting}>
+                {updateCount > 0 && (
+                  <button style={s.primaryBtnTall} onClick={() => handleApplyUpdates()} disabled={isApplyingUpdates}>
+                    <Icon.Download /> {isApplyingUpdates ? '적용 중...' : `모두 업데이트 (${updateCount})`}
+                  </button>
+                )}
+                <button style={s.ghostBtnTall} onClick={handleExportPack} disabled={!activeProfile || isExporting}>
                   <Icon.Download /> {isExporting ? '내보내는 중...' : '모드팩 내보내기'}
                 </button>
               </div>
             </div>
-            {exportStatus && <div style={s.scanBanner}><Icon.Check /><span>{exportStatus}</span></div>}
-            {updateStatus && <div style={s.scanBanner}><Icon.Package /><span>{updateStatus}</span></div>}
-            {uninstallStatus && <div style={s.scanBanner}><Icon.Trash /><span>{uninstallStatus}</span></div>}
+            {exportStatus && <div className="banner" style={s.scanBanner}><Icon.Check /><span>{exportStatus}</span></div>}
+            {updateStatus && <div className="banner" style={s.scanBanner}><Icon.Package /><span>{updateStatus}</span></div>}
+            {uninstallStatus && <div className="banner" style={s.scanBanner}><Icon.Trash /><span>{uninstallStatus}</span></div>}
             <div style={s.listWrap}>
               {installedMods.length === 0 ? (
                 <div style={s.empty}>
@@ -779,7 +1393,7 @@ export default function App() {
                 </div>
               ) : (
                 installedMods.map(mod => (
-                  <div key={mod.id} style={s.installedItem}>
+                  <div key={mod.id} className="card" style={s.installedItem}>
                     <div style={{flex: 1, cursor: 'pointer'}} onClick={() => openModDetail(mod, 'installed')}>
                       <div style={s.modName}>
                         {mod.name} <span style={s.verTag}>v{mod.version_number}</span>
@@ -789,9 +1403,16 @@ export default function App() {
                       {updates[mod.modrinth_id]?.update_available && (
                         <div style={{fontSize: 12, color: '#c7d2fe'}}>최신 버전: v{updates[mod.modrinth_id].latest_version_number}</div>
                       )}
-                      <div style={{fontSize: 12, color: '#71717a'}}>설치일: {new Date(mod.installed_at).toLocaleDateString()}</div>
+                      <div style={{fontSize: 12, color: '#71717a'}}>설치일: {formatDbDate(mod.installed_at, true)}</div>
                     </div>
-                    <button style={s.delBtn} onClick={() => handleUninstallMod(mod)}><Icon.Trash /></button>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {updates[mod.modrinth_id]?.update_available && (
+                        <button style={s.updateBtn} onClick={() => handleApplyUpdates([mod.modrinth_id])} disabled={isApplyingUpdates}>
+                          <Icon.Download /> {isApplyingUpdates ? '적용 중...' : '업데이트'}
+                        </button>
+                      )}
+                      <button style={s.delBtn} onClick={() => handleUninstallMod(mod)}><Icon.Trash /></button>
+                    </div>
                   </div>
                 ))
               )}
@@ -807,12 +1428,76 @@ export default function App() {
                 <h1 style={s.pageTitle}>프로필 관리</h1>
                 <p style={s.pageDesc}>게임 버전, 로더별로 모드 세트를 분리 관리합니다.</p>
               </div>
-              <button style={s.primaryBtnTall} onClick={handleImportPack} disabled={isImporting}>
-                <Icon.Download /> {isImporting ? '가져오는 중...' : '모드팩 가져오기'}
-              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={s.primaryBtnTall} onClick={handleImportMrpack} disabled={isImporting}>
+                  <Icon.Download /> {isImporting ? '가져오는 중...' : '.mrpack 가져오기'}
+                </button>
+                <button style={s.ghostBtnTall} onClick={handleImportPack} disabled={isImporting}>
+                  <Icon.Package /> ModForge 팩 가져오기
+                </button>
+              </div>
             </div>
-            {importStatus && <div style={s.scanBanner}><Icon.Package /><span>{importStatus}</span></div>}
-            {backupStatus && <div style={s.scanBanner}><Icon.Check /><span>{backupStatus}</span></div>}
+            {importStatus && <div className="banner" style={s.scanBanner}><Icon.Package /><span>{importStatus}</span></div>}
+            {isImporting && mrpackProgress && (
+              <div className="banner" style={s.progressWrap}>
+                <div style={s.progressTop}>
+                  <span>{mrpackProgress.done} / {mrpackProgress.total} 파일</span>
+                  <span style={s.mutedTxt}>{mrpackProgress.name}</span>
+                </div>
+                <div style={s.progressTrack}>
+                  <div style={{
+                    ...s.progressFill,
+                    width: `${mrpackProgress.total > 0 ? Math.round((mrpackProgress.done / mrpackProgress.total) * 100) : 0}%`,
+                  }} />
+                </div>
+              </div>
+            )}
+            {backupStatus && <div className="banner" style={s.scanBanner}><Icon.Check /><span>{backupStatus}</span></div>}
+            {activateStatus && <div className="banner" style={s.scanBanner}><Icon.Check /><span>{activateStatus}</span></div>}
+            {launchStatus && (
+              <div className="banner" style={s.scanBanner}>
+                <Icon.Play />
+                <span style={{ flex: 1 }}>{launchStatus}</span>
+                {launchHelpUrl && (
+                  <button style={s.ghostBtn} onClick={() => window.open(launchHelpUrl)}>다운로드 페이지 열기</button>
+                )}
+              </div>
+            )}
+            {crashInfo && (
+              <div className="banner" style={s.crashBanner}>
+                <div style={s.crashTitle}><Icon.Alert /> 게임 크래시 감지</div>
+                <div style={s.crashSummary}>
+                  {crashInfo.summary ?? '크래시 원인 요약을 찾지 못했습니다. 아래 게임 로그의 빨간 줄을 확인해 보세요.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                  {crashInfo.path && (
+                    <button style={s.ghostBtnTall} onClick={() => api.openFolder(crashInfo.path!)}>
+                      크래시 리포트 열기
+                    </button>
+                  )}
+                  <button style={s.ghostBtn} onClick={() => setCrashInfo(null)}>닫기</button>
+                </div>
+              </div>
+            )}
+            {prepStatus && <div className="banner" style={s.scanBanner}><Icon.Download /><span>{prepStatus}</span></div>}
+            {isPreparingFiles && gameFilesProgress && (
+              <div className="banner" style={s.progressWrap}>
+                <div style={s.progressTop}>
+                  <span>
+                    {GAME_FILES_PHASE_LABEL[gameFilesProgress.phase] ?? gameFilesProgress.phase} {gameFilesProgress.done} / {gameFilesProgress.total}
+                  </span>
+                  <span style={{ ...s.mutedTxt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320 }}>
+                    {gameFilesProgress.name}
+                  </span>
+                </div>
+                <div style={s.progressTrack}>
+                  <div style={{
+                    ...s.progressFill,
+                    width: `${gameFilesProgress.total > 0 ? Math.round((gameFilesProgress.done / gameFilesProgress.total) * 100) : 0}%`,
+                  }} />
+                </div>
+              </div>
+            )}
 
             {activeProfile && (
               <div style={s.settingsPanel}>
@@ -828,26 +1513,46 @@ export default function App() {
                   <button style={s.ghostBtnTall} onClick={handleRestoreBackup} disabled={!lastBackupPath}>
                     마지막 백업 복구
                   </button>
+                  <button style={s.ghostBtnTall} onClick={handlePrepareGameFiles} disabled={isPreparingFiles}>
+                    <Icon.Download /> {isPreparingFiles ? '준비 중...' : '게임 파일 준비'}
+                  </button>
                 </div>
               </div>
             )}
 
             <div style={s.profileGrid}>
               {profiles.map(p => (
-                <div key={p.id} style={{...s.profileCard, ...(activeProfile?.id === p.id ? s.profileActive : {})}} onClick={() => setActive(p)}>
+                <div key={p.id} className="card" style={{...s.profileCard, ...(activeProfile?.id === p.id ? s.profileActive : {})}} onClick={() => setActive(p)}>
                   <div style={{display: 'flex', justifyContent: 'space-between'}}>
-                    <span style={s.profileCardName}>{p.name}</span>
+                    <span style={s.profileCardName}>
+                      {p.name}
+                      {Boolean(p.is_active) && <span style={s.linkedBadge}>게임에 연결됨</span>}
+                    </span>
                     <button style={s.iconBtn} onClick={(e) => handleDeleteProfile(p.id, e)}><Icon.Trash /></button>
                   </div>
                   <div style={s.chips}>
                     <span style={s.chip}>{p.loader}</span>
                     <span style={s.chip}>{p.game_version}</span>
                   </div>
+                  <div style={{ marginTop: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button style={s.playBtn} onClick={(e) => handleLaunchProfile(p, e)} disabled={launchingId !== null}>
+                      <Icon.Play /> {launchingId === p.id ? '준비 중...' : '실행'}
+                    </button>
+                    {p.is_active ? (
+                      <button style={s.ghostBtn} onClick={handleDeactivateProfile} disabled={isActivating}>
+                        {isActivating ? '처리 중...' : '연결 해제'}
+                      </button>
+                    ) : (
+                      <button style={s.linkBtn} onClick={(e) => handleActivateProfile(p, e)} disabled={isActivating}>
+                        {isActivating ? '연결 중...' : '게임에 연결'}
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
 
               {!showAddProfile ? (
-                <div style={{...s.profileCard, borderStyle: 'dashed', display: 'flex', alignItems: 'center', justifyContent: 'center'}} onClick={() => setShowAddProfile(true)}>
+                <div className="card" style={{...s.profileCard, borderStyle: 'dashed', display: 'flex', alignItems: 'center', justifyContent: 'center'}} onClick={() => setShowAddProfile(true)}>
                   <p style={{color: '#71717a', margin: 0}}>+ 새 프로필 추가</p>
                 </div>
               ) : (
@@ -856,6 +1561,7 @@ export default function App() {
                   <select style={s.select} value={newProfileLoader} onChange={e => setNewProfileLoader(e.target.value)}>
                     <option value="Fabric">Fabric</option>
                     <option value="Forge">Forge</option>
+                    <option value="NeoForge">NeoForge</option>
                     <option value="Quilt">Quilt</option>
                   </select>
                   <select style={{...s.select, marginTop: 5}} value={newProfileVer} onChange={e => setNewProfileVer(e.target.value)}>
@@ -870,6 +1576,158 @@ export default function App() {
                 </div>
               )}
             </div>
+
+            {gameLogs.length > 0 && (
+              <div style={{ marginTop: 20 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <p style={{ ...s.label, margin: 0 }}>
+                    게임 로그 {runningPid != null ? `(실행 중 · PID ${runningPid})` : '(종료됨)'}
+                  </p>
+                  <button style={s.ghostBtn} onClick={() => { setGameLogs([]); setLogStickToBottom(true) }}>지우기</button>
+                </div>
+                <div style={{ position: 'relative' }}>
+                  <div ref={logBoxRef} onScroll={handleLogScroll} style={s.logBox}>
+                    {gameLogs.map((line, i) => (
+                      <div key={i} style={{ ...s.logLine, color: logLineColor(line) }}>{line}</div>
+                    ))}
+                  </div>
+                  {!logStickToBottom && (
+                    <button style={s.logJumpBtn} onClick={jumpToLogBottom}>
+                      ↓ 맨 아래로
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 4. 데이터베이스 동기화 페이지 */}
+        {page === 'sync' && (
+          <div style={s.page}>
+            <div style={s.pageHead}>
+              <h1 style={s.pageTitle}>데이터베이스</h1>
+              <p style={s.pageDesc}>Modrinth 인기 모드를 로컬 DB에 캐시해 오프라인 검색과 빠른 의존성 분석을 가능하게 합니다.</p>
+            </div>
+
+            {syncMessage && <div className="banner" style={s.scanBanner}><Icon.Check /><span>{syncMessage}</span></div>}
+
+            <div style={s.statRow}>
+              <div style={s.statCard}>
+                <div style={s.statValue}>{dbStatus ? dbStatus.totalMods.toLocaleString() : '-'}</div>
+                <div style={s.statLabel}>캐시된 모드</div>
+              </div>
+              <div style={s.statCard}>
+                <div style={s.statValue}>{lastSyncLog ? formatDbDate(lastSyncLog.started_at) : '기록 없음'}</div>
+                <div style={s.statLabel}>마지막 동기화</div>
+              </div>
+            </div>
+
+            <div style={s.settingsPanel}>
+              <div style={{ flex: 1 }}>
+                <p style={s.label}>동기화 범위 (다운로드 순 상위)</p>
+                <select
+                  style={{ ...s.select, maxWidth: 260 }}
+                  value={syncLimit}
+                  onChange={e => setSyncLimit(Number(e.target.value))}
+                  disabled={isSyncing}
+                >
+                  <option value={50}>50개 (빠름)</option>
+                  <option value={100}>100개</option>
+                  <option value={200}>200개</option>
+                  <option value={500}>500개 (오래 걸림)</option>
+                </select>
+              </div>
+              <button style={s.primaryBtnTall} onClick={handleSync} disabled={isSyncing}>
+                <Icon.Database /> {isSyncing ? '동기화 중...' : '동기화 시작'}
+              </button>
+            </div>
+
+            {isSyncing && (
+              <div className="banner" style={s.progressWrap}>
+                <div style={s.progressTop}>
+                  <span>{syncProgress ? `${syncProgress.synced} / ${syncProgress.total} (${syncPct}%)` : '동기화 준비 중...'}</span>
+                  <span style={s.mutedTxt}>{syncProgress?.name ?? ''}</span>
+                </div>
+                <div style={s.progressTrack}>
+                  <div style={{ ...s.progressFill, width: `${syncPct}%` }} />
+                </div>
+                <p style={{ ...s.mutedTxt, margin: 0 }}>모드마다 상세 정보와 버전 목록을 받아오므로 수 분 정도 걸릴 수 있습니다. 앱을 닫지 마세요.</p>
+              </div>
+            )}
+
+            <p style={s.label}>게임 실행 설정</p>
+            <div style={{ ...s.settingsPanel, alignItems: 'flex-start' }}>
+              <div style={{ flex: 1 }}>
+                <p style={{ ...s.label, marginBottom: 6 }}>
+                  Java 최대 메모리 — <span style={{ color: '#a5b4fc' }}>{(memoryMb / 1024).toFixed(1)}GB</span>
+                  {totalMemoryMb ? ` · 시스템 ${Math.round(totalMemoryMb / 1024)}GB` : ''}
+                </p>
+                {(() => {
+                  const sliderMax = Math.max(
+                    2048,
+                    Math.min(16384, totalMemoryMb ? Math.floor((totalMemoryMb * 0.75) / 512) * 512 : 16384)
+                  )
+                  return (
+                    <input
+                      type="range"
+                      min={1024}
+                      max={sliderMax}
+                      step={512}
+                      value={Math.min(memoryMb, sliderMax)}
+                      onChange={(e) => handleMemoryChange(Number(e.target.value))}
+                      style={{ width: '100%' }}
+                      disabled={runningPid != null}
+                    />
+                  )
+                })()}
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+                  {[2048, 4096, 8192].map((preset) => (
+                    (!totalMemoryMb || preset <= totalMemoryMb * 0.75) && (
+                      <button
+                        key={preset}
+                        style={{ ...s.chip, cursor: 'pointer', border: memoryMb === preset ? '1px solid #6366f1' : '1px solid transparent' }}
+                        onClick={() => handleMemoryChange(preset)}
+                        disabled={runningPid != null}
+                      >
+                        {preset / 1024}GB
+                      </button>
+                    )
+                  ))}
+                  <span style={{ ...s.mutedTxt, fontSize: 11, marginLeft: 'auto' }}>
+                    {runningPid != null ? '게임 실행 중에는 변경할 수 없습니다.' : '다음 게임 실행부터 적용됩니다.'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <p style={s.label}>최근 동기화 기록</p>
+            {(dbStatus?.logs ?? []).length === 0 ? (
+              <div style={s.empty}>
+                <Icon.Database />
+                <p style={{ marginTop: 10 }}>아직 동기화 기록이 없습니다. 첫 동기화를 시작해 보세요.</p>
+              </div>
+            ) : (
+              <div style={s.listWrap}>
+                {dbStatus!.logs.map(log => (
+                  <div key={log.id} style={s.logRow}>
+                    <span style={{
+                      ...(log.status === 'done' ? s.okBadge : log.status === 'running' ? s.updateBadge : s.blockerBadge),
+                      marginLeft: 0,
+                    }}>
+                      {log.status === 'done' ? '완료' : log.status === 'running' ? '진행 중' : '오류'}
+                    </span>
+                    <span style={{ fontWeight: 'bold' }}>{log.mods_synced}개 동기화</span>
+                    <span style={s.mutedTxt}>{formatDbDate(log.started_at)}</span>
+                    {log.errors && (
+                      <span style={{ ...s.mutedTxt, color: '#f87171', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }} title={log.errors}>
+                        {log.errors.slice(0, 80)}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -884,6 +1742,7 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
 }) {
   return (
     <div onClick={() => (!required || isSelectableResult) && onToggle()}
+      className={(!required || isSelectableResult) ? 'card' : undefined}
       style={{ ...s.modCard, ...(checked ? s.modChecked : {}), cursor: (required && !isSelectableResult) ? 'default' : 'pointer' }}>
       <div style={s.modLeft}>
         {!isSelectableResult && (
@@ -894,6 +1753,7 @@ function ModCard({ mod, required, checked, onToggle, isSelectableResult }: {
           {mod.description && <div style={s.modDesc}>{mod.description.slice(0, 80)}...</div>}
           <div style={s.modMeta}>
             <span style={s.verTag}>v{mod.version_number ?? '알 수 없음'}</span>
+            {mod.pinned && <span style={s.pinBadge} title="상위 모드가 이 버전을 요구합니다">버전 고정</span>}
             {mod.downloads > 0 && <span style={{fontSize: 11, color: '#71717a'}}>{mod.downloads.toLocaleString()} 다운로드</span>}
           </div>
         </div>
@@ -909,9 +1769,21 @@ function ModIcon({ src, alt }: { src?: string | null; alt: string }) {
   return <img src={src} alt={alt} style={s.modIcon} onError={() => setFailed(true)} referrerPolicy="no-referrer" />
 }
 
+function PinWarningPanel({ warnings }: { warnings: string[] }) {
+  return (
+    <div className="banner" style={s.pinWarnPanel}>
+      <div style={s.pinWarnTitle}><Icon.Alert /> 의존성 버전 요구 불일치</div>
+      {warnings.map((warning) => (
+        <div key={warning} style={s.pinWarnItem}>{warning}</div>
+      ))}
+      <div style={s.pinWarnHint}>보통은 선택된 버전으로 정상 작동하지만, 게임 실행 시 문제가 생기면 이 모드들을 확인해 보세요.</div>
+    </div>
+  )
+}
+
 function ConflictPanel({ conflicts }: { conflicts: ConflictDetail[] }) {
   return (
-    <div style={s.conflictPanel}>
+    <div className="banner" style={s.conflictPanel}>
       <div style={s.conflictTitle}><Icon.Alert /> 충돌 상세</div>
       {conflicts.map((conflict, index) => (
         <div key={`${conflict.source}-${index}`} style={s.conflictItem}>
@@ -947,7 +1819,7 @@ function toStringArray(value: unknown): string[] {
 
 // --- Styles ---
 const s: Record<string, React.CSSProperties> = {
-  root: { display: 'flex', height: '100vh', background: 'radial-gradient(circle at top left, #1d2433 0, #0f0f11 38%, #0a0a0b 100%)', color: '#e8e8ea', fontFamily: "'Apple SD Gothic Neo', sans-serif" },
+  root: { display: 'flex', height: '100vh', background: 'radial-gradient(circle at top left, #1d2433 0, #0f0f11 38%, #0a0a0b 100%)', color: '#e8e8ea', fontFamily: "'Segoe UI', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif" },
   sidebar: { width: 230, background: 'rgba(16, 16, 19, 0.92)', borderRight: '1px solid #2a2a2e', padding: '20px 12px', display: 'flex', flexDirection: 'column', boxShadow: '12px 0 40px rgba(0,0,0,0.22)' },
   logo: { display: 'flex', alignItems: 'center', gap: 11, padding: '0 10px 22px' },
   logoMark: { width: 34, height: 34, background: 'linear-gradient(135deg, #4f46e5, #14b8a6)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 12px 28px rgba(20,184,166,0.20), inset 0 1px 0 rgba(255,255,255,0.20)' },
@@ -999,6 +1871,10 @@ const s: Record<string, React.CSSProperties> = {
   conflictSource: { color: '#71717a', fontSize: 11, marginTop: 6 },
   blockerBadge: { fontSize: 11, color: '#fee2e2', background: '#7f1d1d', padding: '2px 7px', borderRadius: 4 },
   warnBadge: { fontSize: 11, color: '#fef3c7', background: '#78350f', padding: '2px 7px', borderRadius: 4 },
+  pinWarnPanel: { border: '1px solid #4a3410', background: '#1a1204', borderRadius: 8, padding: 12, marginBottom: 15 },
+  pinWarnTitle: { color: '#fbbf24', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 },
+  pinWarnItem: { color: '#e7d3a1', fontSize: 12, lineHeight: 1.5, padding: '4px 0', borderTop: '1px solid #2e2208' },
+  pinWarnHint: { color: '#8a7a55', fontSize: 11, marginTop: 8 },
   
   depList: { display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 20 },
   modCard: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '13px 15px', borderRadius: 8, background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', boxShadow: '0 10px 26px rgba(0,0,0,0.16)' },
@@ -1021,6 +1897,7 @@ const s: Record<string, React.CSSProperties> = {
   listWrap: { display: 'flex', flexDirection: 'column', gap: 10 },
   installedItem: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
   delBtn: { background: '#2a1515', border: '1px solid #3f1515', color: '#f87171', borderRadius: 6, padding: '8px', cursor: 'pointer', display: 'flex' },
+  updateBtn: { background: '#312e81', border: '1px solid #4338ca', color: '#c7d2fe', borderRadius: 6, padding: '8px 12px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 'bold', whiteSpace: 'nowrap' },
 
   profileGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 15 },
   profileCard: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 15, cursor: 'pointer', minHeight: 90, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
@@ -1036,6 +1913,36 @@ const s: Record<string, React.CSSProperties> = {
   empty: { textAlign: 'center', padding: '40px 0', color: '#71717a' },
   verTag: { fontSize: 11, background: '#27272a', padding: '2px 6px', borderRadius: 4, marginLeft: 5 },
   updateBadge: { fontSize: 11, background: '#312e81', color: '#c7d2fe', padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
+  linkedBadge: { fontSize: 11, background: '#12351f', color: '#86efac', padding: '2px 7px', borderRadius: 4, marginLeft: 8, fontWeight: 'normal' },
+  pinBadge: { fontSize: 11, background: '#3b2f14', color: '#fbbf24', padding: '2px 6px', borderRadius: 4 },
+  linkBtn: { background: '#14b8a6', color: '#04211d', border: 'none', padding: '7px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold', fontSize: 12 },
+  playBtn: { background: '#16a34a', color: '#fff', border: 'none', padding: '7px 14px', borderRadius: 6, cursor: 'pointer', fontWeight: 'bold', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 },
+  playBtnWide: { width: '100%', marginTop: 10, background: 'linear-gradient(135deg, #16a34a, #15803d)', color: '#fff', border: 'none', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, boxShadow: '0 10px 24px rgba(22,163,74,0.25)' },
+  stopBtnWide: { width: '100%', marginTop: 10, background: 'linear-gradient(135deg, #dc2626, #b91c1c)', color: '#fff', border: 'none', padding: '10px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, boxShadow: '0 10px 24px rgba(220,38,38,0.25)' },
+  logBox: { background: '#0a0a0c', border: '1px solid #26262c', borderRadius: 8, padding: '10px 12px', maxHeight: 260, overflowY: 'auto', fontFamily: 'Consolas, monospace', fontSize: 11, userSelect: 'text' },
+  logLine: { whiteSpace: 'pre-wrap', color: '#9ca3af', lineHeight: 1.55, overflowWrap: 'anywhere' },
+  logJumpBtn: { position: 'absolute', right: 12, bottom: 12, background: 'rgba(49,46,129,0.92)', border: '1px solid #4338ca', color: '#c7d2fe', borderRadius: 20, padding: '5px 12px', cursor: 'pointer', fontSize: 11, fontWeight: 'bold', boxShadow: '0 6px 16px rgba(0,0,0,0.35)' },
+  crashBanner: { border: '1px solid #7f1d1d', background: '#180a0a', borderRadius: 8, padding: 14, marginBottom: 15 },
+  crashTitle: { color: '#fca5a5', fontWeight: 'bold', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  crashSummary: { color: '#e5c1c1', fontSize: 12, lineHeight: 1.55, userSelect: 'text', overflowWrap: 'anywhere' },
+  sideNote: { fontSize: 11, color: '#8b8b95', marginTop: 8, lineHeight: 1.45, userSelect: 'text' },
+  accountBlock: { background: 'linear-gradient(180deg, #202127, #18181b)', padding: 12, borderRadius: 8, marginTop: 12, border: '1px solid #2d2d34' },
+  accountRow: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 },
+  accountDot: { width: 8, height: 8, borderRadius: '50%', background: '#4ade80', flexShrink: 0, boxShadow: '0 0 8px rgba(74,222,128,0.6)' },
+  accountName: { fontSize: 13, fontWeight: 'bold', color: '#e8e8ea', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  accountHint: { fontSize: 11, color: '#8b8b95', lineHeight: 1.45, marginTop: 6, marginBottom: 6, userSelect: 'text' },
+  accountCode: { fontFamily: 'Consolas, monospace', fontSize: 20, fontWeight: 'bold', letterSpacing: 2, color: '#a5b4fc', background: '#101014', border: '1px solid #34343b', borderRadius: 6, padding: '8px 10px', textAlign: 'center', marginBottom: 8, userSelect: 'text' },
+  msLoginBtn: { width: '100%', background: 'linear-gradient(135deg, #2563eb, #4f46e5)', color: '#fff', border: 'none', padding: '9px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 'bold', fontSize: 13, boxShadow: '0 10px 24px rgba(37,99,235,0.25)' },
+  offlineBtn: { width: '100%', marginTop: 6, background: 'transparent', border: '1px dashed #3f3f46', color: '#8b8b95', padding: '7px 10px', borderRadius: 8, cursor: 'pointer', fontSize: 12 },
+  statRow: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 },
+  statCard: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 16, boxShadow: '0 10px 24px rgba(0,0,0,0.14)' },
+  statValue: { fontSize: 20, fontWeight: 'bold', color: '#f4f4f5' },
+  statLabel: { fontSize: 12, color: '#71717a', marginTop: 4 },
+  progressWrap: { background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, padding: 16, marginBottom: 18, display: 'flex', flexDirection: 'column', gap: 10 },
+  progressTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, fontSize: 13, color: '#d4d4d8' },
+  progressTrack: { height: 8, background: '#27272a', borderRadius: 4, overflow: 'hidden' },
+  progressFill: { height: '100%', background: 'linear-gradient(90deg, #6366f1, #14b8a6)', transition: 'width 0.3s ease' },
+  logRow: { display: 'flex', alignItems: 'center', gap: 14, padding: '11px 14px', background: 'rgba(24,24,27,0.88)', border: '1px solid #2d2d34', borderRadius: 8, fontSize: 13 },
   okBadge: { fontSize: 11, background: '#12351f', color: '#86efac', padding: '2px 6px', borderRadius: 4, marginLeft: 8 },
   recommendHero: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, background: 'linear-gradient(135deg, rgba(31,41,55,0.94), rgba(24,24,27,0.92))', border: '1px solid #30323b', borderRadius: 8, padding: 18, marginBottom: 18, boxShadow: '0 18px 40px rgba(0,0,0,0.20)' },
   heroKicker: { color: '#a5b4fc', fontSize: 12, fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },

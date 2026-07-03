@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
+import { autoUpdater } from 'electron-updater'
 import { migrate } from './db'
 import { registerHandlers } from './junction'
 
@@ -57,6 +58,14 @@ app.whenReady().then(() => {
   createWindow()
 
   registerHandlers(mainWindow)
+
+  // 자동 업데이트: GitHub Releases에서 새 버전을 확인하고, 다운로드 완료 시 OS 알림 표시
+  // (패키징된 앱에서만 동작 — 개발 모드에서는 건너뜀)
+  if (app.isPackaged) {
+    autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+      console.warn('[Updater] 업데이트 확인 실패:', err?.message ?? err)
+    })
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {

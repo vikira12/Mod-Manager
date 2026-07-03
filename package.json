@@ -1,10 +1,10 @@
 {
   "name": "mod-connecter",
-  "version": "1.0.0",
-  "description": "An Electron application with React and TypeScript",
+  "version": "0.1.0",
+  "description": "ModForge — 모드 의존성 자동 해결, 프로필 전환, 게임 실행까지 지원하는 Minecraft 모드 매니저/런처",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "vikira12",
+  "homepage": "https://github.com/vikira12/Mod-Manager",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",
@@ -25,9 +25,7 @@
     "@electron-toolkit/utils": "^4.0.0",
     "axios": "^1.16.0",
     "better-sqlite3": "^12.9.0",
-    "electron-updater": "^6.3.9",
-    "sqlite": "^5.1.1",
-    "sqlite3": "^6.0.1"
+    "electron-updater": "^6.3.9"
   },
   "devDependencies": {
     "@electron-toolkit/eslint-config-prettier": "^3.0.0",
@@ -37,7 +35,6 @@
     "@types/node": "^22.19.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
-    "@types/sqlite3": "^3.1.11",
     "@vitejs/plugin-react": "^5.1.1",
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",
